@@ -49,4 +49,6 @@ export type AgentProfile = {
   name: string;
   goal: string;
   systemPrompt: string;
+  preferredSkills: string[];
+  outputStyle: string;
 };

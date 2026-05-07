@@ -25,7 +25,9 @@ const defaultAgent: AgentProfile = {
   id: 'default',
   name: 'Default Agent',
   goal: 'Execute local tasks with tools, memory, and reflection.',
-  systemPrompt: 'You are a practical local agent. Prefer clear actions, grounded outputs, and concise summaries.'
+  systemPrompt: 'You are a practical local agent. Prefer clear actions, grounded outputs, and concise summaries.',
+  preferredSkills: ['file-browser', 'web-fetch'],
+  outputStyle: 'Short operational summary with next action.'
 };
 
 export async function ensureRuntime(): Promise<void> {
@@ -96,7 +98,18 @@ export async function appendRun(run: Omit<RunRecord, 'id' | 'createdAt'>): Promi
 
 export async function loadAgent(): Promise<AgentProfile> {
   await ensureRuntime();
-  return fs.readJson(agentsPath);
+  const raw = await fs.readJson(agentsPath);
+  return {
+    ...defaultAgent,
+    ...raw,
+    preferredSkills: Array.isArray(raw.preferredSkills) ? raw.preferredSkills : defaultAgent.preferredSkills,
+    outputStyle: typeof raw.outputStyle === 'string' ? raw.outputStyle : defaultAgent.outputStyle
+  };
+}
+
+export async function saveAgent(agent: AgentProfile): Promise<void> {
+  await ensureRuntime();
+  await fs.writeJson(agentsPath, agent, { spaces: 2 });
 }
 
 export async function loadInstalledSkills(): Promise<string[]> {
@@ -110,4 +123,9 @@ export async function installSkill(id: string): Promise<void> {
     skills.push(id);
     await fs.writeJson(installedSkillsPath, skills, { spaces: 2 });
   }
+}
+
+export async function saveConfig(config: RuntimeConfig): Promise<void> {
+  await ensureRuntime();
+  await fs.writeFile(configPath, yaml.dump(config), 'utf8');
 }

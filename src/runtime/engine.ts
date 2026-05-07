@@ -1,5 +1,7 @@
 import { appendMemory, appendRun, loadAgent, loadInstalledSkills, loadMemory } from './storage.js';
 import { createReflection } from './reflection.js';
+import { invokeModel } from './model.js';
+import { defaultWorkflow } from './workflow.js';
 import type { RunRecord } from '../types.js';
 
 function chooseSkills(task: string, installed: string[]): string[] {
@@ -24,6 +26,12 @@ function summarizeMemory(matches: string[]): string {
   return `Relevant memory: ${matches.slice(0, 3).join(' | ')}`;
 }
 
+function extractLessons(matches: string[]): string[] {
+  return matches
+    .filter((item) => item.length > 20)
+    .slice(0, 3);
+}
+
 export async function runTask(task: string): Promise<RunRecord> {
   const agent = await loadAgent();
   const installedSkills = await loadInstalledSkills();
@@ -32,8 +40,24 @@ export async function runTask(task: string): Promise<RunRecord> {
     .filter((item) => task.toLowerCase().split(/\s+/).some((word) => word.length > 3 && item.content.toLowerCase().includes(word)))
     .map((item) => item.content);
 
-  const usedSkills = chooseSkills(task, installedSkills);
-  const output = [
+  const usedSkills = Array.from(new Set([...chooseSkills(task, installedSkills), ...agent.preferredSkills.filter((id) => installedSkills.includes(id))]));
+  const lessons = extractLessons(relevantMemory);
+
+  const modelResponse = await invokeModel([
+    { role: 'system', content: `${agent.systemPrompt}\nOutput style: ${agent.outputStyle}` },
+    {
+      role: 'user',
+      content: [
+        `Task: ${task}`,
+        `Available skills: ${usedSkills.join(', ') || 'none'}`,
+        `Workflow: ${defaultWorkflow.map((step) => `${step.name}: ${step.description}`).join(' | ')}`,
+        summarizeMemory(relevantMemory),
+        lessons.length > 0 ? `Lessons: ${lessons.join(' | ')}` : 'Lessons: none'
+      ].join('\n')
+    }
+  ]);
+
+  const output = modelResponse || [
     `Agent: ${agent.name}`,
     `Goal: ${agent.goal}`,
     `Task: ${task}`,
@@ -68,6 +92,13 @@ export async function runTask(task: string): Promise<RunRecord> {
     task,
     content: reflection,
     tags: ['task', 'reflection']
+  });
+
+  await appendMemory({
+    kind: 'lesson',
+    task,
+    content: `Preferred skills: ${usedSkills.join(', ') || 'none'}. ${reflection}`,
+    tags: ['task', 'lesson']
   });
 
   return storedRun;

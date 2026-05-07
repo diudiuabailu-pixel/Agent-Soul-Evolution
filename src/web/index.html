@@ -15,74 +15,33 @@
       --muted: #9db0e6;
       --accent: #7c9cff;
       --accent-2: #5de4c7;
+      --warn: #ffd166;
     }
     * { box-sizing: border-box; }
-    body {
-      margin: 0;
-      font-family: Inter, -apple-system, BlinkMacSystemFont, sans-serif;
-      background: linear-gradient(180deg, #0b1020 0%, #10162d 100%);
-      color: var(--text);
-    }
-    .wrap {
-      max-width: 1200px;
-      margin: 0 auto;
-      padding: 32px 20px 60px;
-    }
+    body { margin: 0; font-family: Inter, -apple-system, BlinkMacSystemFont, sans-serif; background: linear-gradient(180deg, #0b1020 0%, #10162d 100%); color: var(--text); }
+    .wrap { max-width: 1280px; margin: 0 auto; padding: 32px 20px 60px; }
     h1 { margin: 0 0 10px; font-size: 40px; }
-    p { color: var(--muted); }
-    .grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-      gap: 16px;
-      margin-top: 24px;
-    }
-    .card {
-      background: rgba(18, 25, 53, 0.95);
-      border: 1px solid var(--line);
-      border-radius: 18px;
-      padding: 18px;
-      box-shadow: 0 18px 40px rgba(0,0,0,0.24);
-    }
+    h2 { margin: 0 0 12px; font-size: 20px; }
+    p, label, span { color: var(--muted); }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; margin-top: 24px; }
+    .card { background: rgba(18, 25, 53, 0.95); border: 1px solid var(--line); border-radius: 18px; padding: 18px; box-shadow: 0 18px 40px rgba(0,0,0,0.24); }
     .label { color: var(--accent-2); font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; }
     .value { margin-top: 10px; font-size: 28px; font-weight: 700; }
-    textarea, input, button {
-      width: 100%;
-      border-radius: 14px;
-      border: 1px solid var(--line);
-      background: var(--panel-soft);
-      color: var(--text);
-      padding: 14px;
-      font: inherit;
-    }
-    button {
-      background: linear-gradient(135deg, var(--accent), #6f7cff);
-      font-weight: 700;
-      cursor: pointer;
-    }
-    ul {
-      list-style: none;
-      margin: 0;
-      padding: 0;
-      display: grid;
-      gap: 12px;
-    }
-    li {
-      padding: 12px;
-      border: 1px solid var(--line);
-      border-radius: 14px;
-      background: rgba(255,255,255,0.02);
-    }
-    pre {
-      margin: 0;
-      white-space: pre-wrap;
-      color: #d7e2ff;
-    }
+    textarea, input, button { width: 100%; border-radius: 14px; border: 1px solid var(--line); background: var(--panel-soft); color: var(--text); padding: 14px; font: inherit; }
+    textarea { min-height: 100px; resize: vertical; }
+    button { background: linear-gradient(135deg, var(--accent), #6f7cff); font-weight: 700; cursor: pointer; }
+    ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 12px; }
+    li { padding: 12px; border: 1px solid var(--line); border-radius: 14px; background: rgba(255,255,255,0.02); }
+    pre { margin: 0; white-space: pre-wrap; color: #d7e2ff; }
+    .stack { display: grid; gap: 12px; }
+    .badge { display: inline-flex; padding: 6px 10px; border-radius: 999px; background: rgba(124,156,255,.12); border: 1px solid var(--line); color: var(--text); font-size: 12px; margin: 4px 6px 0 0; }
+    .hint { color: var(--warn); font-size: 13px; }
   </style>
 </head>
 <body>
   <div class="wrap">
     <h1>Agent Soul Evolution</h1>
-    <p>Local agent runtime with tools, memory, runs, and reflections.</p>
+    <p>Local agent runtime with model routing, memory recall, workflows, and reflections.</p>
 
     <div class="grid" id="summary"></div>
 
@@ -102,6 +61,34 @@
       </section>
 
       <section class="card">
+        <div class="label">Workflow</div>
+        <ul id="workflowList"></ul>
+      </section>
+
+      <section class="card">
+        <div class="label">Agent</div>
+        <div class="stack">
+          <input id="agentName" placeholder="Agent name" />
+          <input id="agentGoal" placeholder="Agent goal" />
+          <input id="agentSkills" placeholder="Preferred skills, comma separated" />
+          <textarea id="agentPrompt" placeholder="System prompt"></textarea>
+          <input id="agentStyle" placeholder="Output style" />
+          <button id="saveAgentButton">Save agent</button>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="label">Model config</div>
+        <div class="stack">
+          <input id="modelBaseUrl" placeholder="Base URL" />
+          <input id="modelName" placeholder="Model name" />
+          <input id="memoryMaxItems" placeholder="Memory max items" />
+          <div class="hint">Use an OpenAI-compatible endpoint such as Ollama at http://localhost:11434/v1.</div>
+          <button id="saveConfigButton">Save config</button>
+        </div>
+      </section>
+
+      <section class="card">
         <div class="label">Recent runs</div>
         <ul id="runsList"></ul>
       </section>
@@ -114,15 +101,17 @@
   </div>
 
   <script>
+    let state = null;
+
     async function loadState() {
       const res = await fetch('/api/state');
-      const data = await res.json();
+      state = await res.json();
 
       document.getElementById('summary').innerHTML = [
         ['Runtime', 'Ready'],
-        ['Skills', String(data.skills.length)],
-        ['Runs', String(data.runs.length)],
-        ['Memory Items', String(data.memory.length)]
+        ['Skills', String(state.skills.length)],
+        ['Runs', String(state.runs.length)],
+        ['Memory Items', String(state.memory.length)]
       ].map(([label, value]) => `
         <div class="card">
           <div class="label">${label}</div>
@@ -130,17 +119,31 @@
         </div>
       `).join('');
 
-      document.getElementById('skillsList').innerHTML = data.skills.map(skill => `
+      document.getElementById('skillsList').innerHTML = state.skills.map(skill => `
         <li><strong>${skill.name}</strong><br><span>${skill.description}</span></li>
       `).join('');
 
-      document.getElementById('runsList').innerHTML = data.runs.slice(0, 5).map(run => `
-        <li><strong>${run.task}</strong><br><span>${run.createdAt}</span></li>
+      document.getElementById('workflowList').innerHTML = state.workflow.map(step => `
+        <li><strong>${step.name}</strong><br><span>${step.description}</span></li>
       `).join('');
 
-      document.getElementById('memoryList').innerHTML = data.memory.slice(0, 5).map(item => `
+      document.getElementById('runsList').innerHTML = state.runs.slice(0, 6).map(run => `
+        <li><strong>${run.task}</strong><br><span>${run.createdAt}</span><br><span>${run.usedSkills.join(', ') || 'no skills'}</span></li>
+      `).join('');
+
+      document.getElementById('memoryList').innerHTML = state.memory.slice(0, 6).map(item => `
         <li><strong>${item.kind}</strong><br><span>${item.content}</span></li>
       `).join('');
+
+      document.getElementById('agentName').value = state.agent.name;
+      document.getElementById('agentGoal').value = state.agent.goal;
+      document.getElementById('agentSkills').value = state.agent.preferredSkills.join(', ');
+      document.getElementById('agentPrompt').value = state.agent.systemPrompt;
+      document.getElementById('agentStyle').value = state.agent.outputStyle;
+
+      document.getElementById('modelBaseUrl').value = state.config.models.default.baseUrl;
+      document.getElementById('modelName').value = state.config.models.default.model;
+      document.getElementById('memoryMaxItems').value = state.config.memory.maxItems;
     }
 
     document.getElementById('runButton').addEventListener('click', async () => {
@@ -152,6 +155,40 @@
       });
       const data = await res.json();
       document.getElementById('runOutput').textContent = `${data.output}\n\nReflection:\n${data.reflection}`;
+      await loadState();
+    });
+
+    document.getElementById('saveAgentButton').addEventListener('click', async () => {
+      await fetch('/api/agent', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: document.getElementById('agentName').value,
+          goal: document.getElementById('agentGoal').value,
+          preferredSkills: document.getElementById('agentSkills').value.split(',').map(v => v.trim()).filter(Boolean),
+          systemPrompt: document.getElementById('agentPrompt').value,
+          outputStyle: document.getElementById('agentStyle').value
+        })
+      });
+      await loadState();
+    });
+
+    document.getElementById('saveConfigButton').addEventListener('click', async () => {
+      await fetch('/api/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          models: {
+            default: {
+              baseUrl: document.getElementById('modelBaseUrl').value,
+              model: document.getElementById('modelName').value
+            }
+          },
+          memory: {
+            maxItems: Number(document.getElementById('memoryMaxItems').value || '500')
+          }
+        })
+      });
       await loadState();
     });
 

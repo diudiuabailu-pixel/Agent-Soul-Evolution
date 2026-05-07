@@ -4,12 +4,12 @@ Agent Soul Evolution is an open-source local agent runtime for running task-focu
 
 ## What it does
 
-- Connects to local or remote OpenAI-compatible models
+- Connects to local or remote OpenAI-compatible models, including Ollama-compatible endpoints
 - Runs agents through a lightweight runtime
 - Uses installable skills to extend what agents can do
-- Stores memory from finished runs
+- Stores results, reflections, and lessons as memory
 - Generates reflections after each task
-- Exposes a local web console for operations and inspection
+- Exposes a local web console for operations, agent settings, and model configuration
 
 ## Quick start
 
@@ -42,6 +42,7 @@ node dist/cli.js start
 node dist/cli.js doctor
 node dist/cli.js skill list
 node dist/cli.js skill add web-fetch
+node dist/cli.js config:set-model --base-url http://localhost:11434/v1 --model qwen2.5:7b
 ```
 
 ## Default skills
@@ -101,9 +102,23 @@ The built-in web console shows:
 
 - Runtime status
 - Enabled skills
+- Workflow stages
 - Recent runs
 - Stored memory items
+- Agent profile editor
+- Model configuration editor
 - Reflections produced by the runtime
+
+## Using a local model
+
+If Ollama is running locally, point the runtime at its OpenAI-compatible endpoint:
+
+```bash
+ollama serve
+node dist/cli.js config:set-model --base-url http://localhost:11434/v1 --model qwen2.5:7b
+```
+
+When a model is reachable, task runs will use the model response first and fall back to the local planner when the endpoint is unavailable.
 
 ## Roadmap
 

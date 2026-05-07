@@ -1,6 +1,6 @@
 import { Command } from 'commander';
 import open from 'open';
-import { ensureRuntime, installSkill, loadConfig, loadInstalledSkills } from './runtime/storage.js';
+import { ensureRuntime, installSkill, loadConfig, loadInstalledSkills, saveConfig } from './runtime/storage.js';
 import { skillCatalog, getSkillManifest } from './skills/catalog.js';
 import { createServer } from './server.js';
 
@@ -40,6 +40,18 @@ skill.command('add').argument('<id>').action(async (id: string) => {
   await installSkill(id);
   console.log(`Installed skill: ${id}`);
 });
+
+program.command('config:set-model')
+  .description('Set the default model endpoint and model name')
+  .requiredOption('--base-url <url>')
+  .requiredOption('--model <name>')
+  .action(async (options) => {
+    const config = await loadConfig();
+    config.models.default.baseUrl = options.baseUrl;
+    config.models.default.model = options.model;
+    await saveConfig(config);
+    console.log(`Updated model to ${options.model} at ${options.baseUrl}`);
+  });
 
 program.command('start').description('Start local runtime and open the web console').action(async () => {
   await ensureRuntime();

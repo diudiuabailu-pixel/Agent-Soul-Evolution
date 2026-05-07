@@ -2,9 +2,10 @@ import express from 'express';
 import cors from 'cors';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ensureRuntime, loadMemory, loadRuns, loadInstalledSkills, loadConfig } from './runtime/storage.js';
+import { ensureRuntime, loadMemory, loadRuns, loadInstalledSkills, loadConfig, loadAgent, saveAgent, saveConfig } from './runtime/storage.js';
 import { skillCatalog } from './skills/catalog.js';
 import { runTask } from './runtime/engine.js';
+import { defaultWorkflow } from './runtime/workflow.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -20,17 +21,19 @@ export async function createServer() {
   app.use(express.static(webRoot));
 
   app.get('/api/state', async (_req, res) => {
-    const [memory, runs, installedSkills] = await Promise.all([
+    const [memory, runs, installedSkills, agent, currentConfig] = await Promise.all([
       loadMemory(),
       loadRuns(),
-      loadInstalledSkills()
+      loadInstalledSkills(),
+      loadAgent(),
+      loadConfig()
     ]);
 
     const skills = installedSkills
       .map((id) => skillCatalog.find((skill) => skill.id === id))
       .filter(Boolean);
 
-    res.json({ memory, runs, skills });
+    res.json({ memory, runs, skills, agent, config: currentConfig, workflow: defaultWorkflow });
   });
 
   app.post('/api/run', async (req, res) => {
@@ -42,6 +45,37 @@ export async function createServer() {
 
     const run = await runTask(task);
     res.json(run);
+  });
+
+  app.post('/api/agent', async (req, res) => {
+    const current = await loadAgent();
+    const next = {
+      ...current,
+      ...req.body,
+      preferredSkills: Array.isArray(req.body?.preferredSkills) ? req.body.preferredSkills : current.preferredSkills
+    };
+    await saveAgent(next);
+    res.json(next);
+  });
+
+  app.post('/api/config', async (req, res) => {
+    const current = await loadConfig();
+    const next = {
+      ...current,
+      ...req.body,
+      server: { ...current.server, ...(req.body?.server || {}) },
+      memory: { ...current.memory, ...(req.body?.memory || {}) },
+      models: {
+        ...current.models,
+        default: { ...current.models.default, ...(req.body?.models?.default || {}) }
+      },
+      skills: {
+        ...current.skills,
+        enabled: Array.isArray(req.body?.skills?.enabled) ? req.body.skills.enabled : current.skills.enabled
+      }
+    };
+    await saveConfig(next);
+    res.json(next);
   });
 
   app.use((_req, res) => {
