@@ -2,13 +2,29 @@ import express from 'express';
 import cors from 'cors';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ensureRuntime, loadMemory, loadRuns, loadInstalledSkills, loadConfig, loadAgent, saveAgent, saveConfig, installSkill } from './runtime/storage.js';
+import {
+  ensureRuntime,
+  loadMemory,
+  loadRuns,
+  loadInstalledSkills,
+  loadConfig,
+  loadAgent,
+  saveAgent,
+  saveConfig,
+  installSkill,
+  loadInsights,
+  loadSoulProfile,
+  saveInsights,
+  saveSoulProfile
+} from './runtime/storage.js';
 import { runTask } from './runtime/engine.js';
 import { loadAllSkillManifests, installSkillPackage } from './runtime/discovery.js';
 import { runEvalSuite } from './runtime/eval.js';
 import { listOllamaModels } from './runtime/ollama.js';
 import { getRunById } from './runtime/run-details.js';
 import { defaultWorkflow } from './runtime/workflow.js';
+import { deriveCandidateInsights, reconcileInsights } from './runtime/insights.js';
+import { recordEvolution, refreshIdentity } from './runtime/soul.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -24,20 +40,32 @@ export async function createServer() {
   app.use(express.static(webRoot));
 
   app.get('/api/state', async (_req, res) => {
-    const [memory, runs, installedSkills, agent, currentConfig, allSkills] = await Promise.all([
+    const [memory, runs, installedSkills, agent, currentConfig, allSkills, insights, soul] = await Promise.all([
       loadMemory(),
       loadRuns(),
       loadInstalledSkills(),
       loadAgent(),
       loadConfig(),
-      loadAllSkillManifests()
+      loadAllSkillManifests(),
+      loadInsights(),
+      loadSoulProfile()
     ]);
 
     const skills = installedSkills
       .map((id) => allSkills.find((skill) => skill.id === id))
       .filter(Boolean);
 
-    res.json({ memory, runs, skills, agent, config: currentConfig, workflow: defaultWorkflow, availableSkills: allSkills });
+    res.json({
+      memory,
+      runs,
+      skills,
+      agent,
+      config: currentConfig,
+      workflow: defaultWorkflow,
+      availableSkills: allSkills,
+      insights,
+      soul
+    });
   });
 
   app.post('/api/run', async (req, res) => {
@@ -114,10 +142,32 @@ export async function createServer() {
       skills: {
         ...current.skills,
         enabled: Array.isArray(req.body?.skills?.enabled) ? req.body.skills.enabled : current.skills.enabled
-      }
+      },
+      evolution: { ...current.evolution, ...(req.body?.evolution || {}) }
     };
     await saveConfig(next);
     res.json(next);
+  });
+
+  app.get('/api/soul', async (_req, res) => {
+    const [soul, insights] = await Promise.all([loadSoulProfile(), loadInsights()]);
+    res.json({ soul, insights });
+  });
+
+  app.post('/api/soul/evolve', async (_req, res) => {
+    const [runs, existing, profile, agent] = await Promise.all([
+      loadRuns(),
+      loadInsights(),
+      loadSoulProfile(),
+      loadAgent()
+    ]);
+    const candidates = deriveCandidateInsights(runs.slice(0, 20));
+    const { next, ops } = reconcileInsights(existing, candidates);
+    await saveInsights(next);
+    const evolved = recordEvolution(profile);
+    const refreshed = refreshIdentity(evolved, agent, next);
+    await saveSoulProfile(refreshed);
+    res.json({ insights: next, soul: refreshed, operations: ops });
   });
 
   app.use((_req, res) => {

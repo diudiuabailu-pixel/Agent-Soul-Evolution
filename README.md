@@ -8,9 +8,15 @@ Agent Soul Evolution is an open-source local agent runtime for running task-focu
 - Runs agents through a lightweight runtime
 - Executes built-in file, web, and shell skills during task runs
 - Uses installable skills to extend what agents can do
-- Stores results, reflections, and lessons as memory
-- Generates reflections after each task
-- Exposes a local web console for operations, agent settings, and model configuration
+- Stores results, reflections, lessons, and insights as memory
+- Retrieves memory by a weighted recency × importance × relevance score
+- Detects task failure, retries with verbal feedback, and updates a soul profile
+- Consolidates recurring patterns into reusable insights every few runs
+- Exposes a local web console for operations, agent settings, soul, and insights
+
+The evolution system is grounded in published research; see
+[`docs/RESEARCH.md`](docs/RESEARCH.md) for the mapping from each module to its
+source paper.
 
 ## Quick start
 
@@ -46,6 +52,8 @@ node dist/cli.js skill add web-fetch
 node dist/cli.js skill install-path ./examples/echo-skill
 node dist/cli.js ollama:list
 node dist/cli.js eval
+node dist/cli.js soul
+node dist/cli.js soul:evolve
 node dist/cli.js config:set-model --base-url http://localhost:11434/v1 --model qwen2.5:7b
 ```
 
@@ -80,6 +88,9 @@ The runtime stores local state in `./.runtime`.
   skills/
     installed.json
     packages/
+  soul/
+    profile.json
+    insights.json
 ```
 
 ## Configuration
@@ -100,6 +111,14 @@ skills:
     - web-fetch
 memory:
   maxItems: 500
+evolution:
+  retryOnFailure: true
+  maxRetries: 1
+  insightCadence: 5
+  recencyHalfLifeHours: 168
+  weightRecency: 1
+  weightImportance: 1
+  weightRelevance: 1
 ```
 
 ## Web console
@@ -110,12 +129,14 @@ The built-in web console shows:
 - Enabled and available skills
 - Workflow stages
 - Recent runs and per-run detail
-- Stored memory items
+- Stored memory items with importance and access counts
 - Agent profile editor
 - Model configuration editor
 - Ollama discovery
 - Evaluation trigger and result summary
 - Reflections produced by the runtime
+- Soul identity, success rate, and evolution generations
+- Top consolidated insights and a manual evolve trigger
 
 ## Installing a custom skill package
 

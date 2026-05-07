@@ -55,6 +55,19 @@
         </div>
       </section>
 
+      <section class="card" style="grid-column: span 2;">
+        <div class="label">Soul</div>
+        <pre id="soulIdentity">Soul has not formed yet. Run a task to begin evolution.</pre>
+        <div style="display: flex; gap: 10px; margin-top: 10px;">
+          <button id="evolveButton" type="button">Trigger evolution cycle</button>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="label">Insights</div>
+        <ul id="insightsList"></ul>
+      </section>
+
       <section class="card">
         <div class="label">Enabled skills</div>
         <ul id="skillsList"></ul>
@@ -120,11 +133,15 @@
       const res = await fetch('/api/state');
       state = await res.json();
 
+      const successPct = state.soul && state.soul.runs > 0 ? `${(state.soul.successRate * 100).toFixed(0)}%` : '—';
       document.getElementById('summary').innerHTML = [
         ['Runtime', 'Ready'],
         ['Skills', String(state.skills.length)],
         ['Runs', String(state.runs.length)],
-        ['Memory Items', String(state.memory.length)]
+        ['Memory Items', String(state.memory.length)],
+        ['Insights', String((state.insights || []).length)],
+        ['Success Rate', successPct],
+        ['Generations', String(state.soul ? state.soul.generations : 0)]
       ].map(([label, value]) => `
         <div class="card">
           <div class="label">${label}</div>
@@ -158,8 +175,19 @@
       });
 
       document.getElementById('memoryList').innerHTML = state.memory.slice(0, 6).map(item => `
-        <li><strong>${item.kind}</strong><br><span>${item.content}</span></li>
+        <li><strong>${item.kind}</strong> <span class="badge">i=${item.importance}</span> <span class="badge">acc=${item.accessCount}</span><br><span>${item.content}</span></li>
       `).join('');
+
+      const insights = state.insights || [];
+      document.getElementById('insightsList').innerHTML = insights.length === 0
+        ? '<li>No insights extracted yet. Run a few tasks or trigger an evolution cycle.</li>'
+        : insights.slice(0, 6).map(insight => `
+          <li><span class="badge">support=${insight.support}</span> <span class="badge">conf=${insight.confidence.toFixed(2)}</span><br><span>${insight.content}</span></li>
+        `).join('');
+
+      document.getElementById('soulIdentity').textContent = state.soul && state.soul.identity
+        ? state.soul.identity
+        : 'Soul has not formed yet. Run a task to begin evolution.';
 
       document.getElementById('agentName').value = state.agent.name;
       document.getElementById('agentGoal').value = state.agent.goal;
@@ -227,6 +255,20 @@
         return;
       }
       list.innerHTML = data.models.map(model => `<li><strong>${model.name}</strong><br><span>${model.modified_at || ''}</span></li>`).join('');
+    });
+
+    document.getElementById('evolveButton').addEventListener('click', async () => {
+      const res = await fetch('/api/soul/evolve', { method: 'POST' });
+      const data = await res.json();
+      const opsSummary = (data.operations || []).map(op => {
+        if (op.kind === 'add') return `+ add: ${op.insight.content}`;
+        if (op.kind === 'upvote') return `^ upvote: ${op.id}`;
+        if (op.kind === 'downvote') return `v downvote: ${op.id}`;
+        if (op.kind === 'edit') return `~ edit: ${op.id}`;
+        return JSON.stringify(op);
+      }).join('\n');
+      document.getElementById('runDetailOutput').textContent = `Evolution cycle ${data.soul.generations} ran with ${(data.operations || []).length} operation(s).\n${opsSummary}`;
+      await loadState();
     });
 
     document.getElementById('runEvalButton').addEventListener('click', async () => {

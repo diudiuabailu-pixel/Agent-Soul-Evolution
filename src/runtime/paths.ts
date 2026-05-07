@@ -8,3 +8,6 @@ export const runsPath = path.join(runtimeRoot, 'runs', 'items.json');
 export const agentsPath = path.join(runtimeRoot, 'agents', 'default.json');
 export const installedSkillsPath = path.join(runtimeRoot, 'skills', 'installed.json');
 export const skillPackagesRoot = path.join(runtimeRoot, 'skills', 'packages');
+export const soulRoot = path.join(runtimeRoot, 'soul');
+export const insightsPath = path.join(soulRoot, 'insights.json');
+export const soulProfilePath = path.join(soulRoot, 'profile.json');

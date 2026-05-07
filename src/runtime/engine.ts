@@ -1,65 +1,104 @@
-import { appendMemory, appendRun, loadAgent, loadInstalledSkills, loadMemory } from './storage.js';
-import { createReflection } from './reflection.js';
+import {
+  appendMemory,
+  appendRun,
+  loadAgent,
+  loadConfig,
+  loadInsights,
+  loadInstalledSkills,
+  loadMemory,
+  loadRuns,
+  loadSoulProfile,
+  saveInsights,
+  saveSoulProfile,
+  touchMemory
+} from './storage.js';
+import { buildRetryFeedback, evaluateOutcome, summarizeReflection } from './reflection.js';
 import { invokeModel } from './model.js';
 import { executeSkill } from './skill-runner.js';
 import { defaultWorkflow } from './workflow.js';
-import type { RunRecord } from '../types.js';
+import { retrieveMemories } from './memory.js';
+import { deriveCandidateInsights, reconcileInsights, selectApplicableInsights } from './insights.js';
+import { applyRunToSoul, recordEvolution, refreshIdentity } from './soul.js';
+import type { Insight, ReflectionResult, RunRecord, RuntimeConfig, SoulProfile } from '../types.js';
 
-function chooseSkills(task: string, installed: string[]): string[] {
-  const lower = task.toLowerCase();
-  const picks: string[] = [];
-  if ((lower.includes('file') || lower.includes('folder') || lower.includes('directory')) && installed.includes('file-browser')) {
-    picks.push('file-browser');
-  }
-  if ((lower.includes('web') || lower.includes('http') || lower.includes('url')) && installed.includes('web-fetch')) {
-    picks.push('web-fetch');
-  }
-  if ((lower.includes('shell') || lower.includes('command') || lower.includes('bash')) && installed.includes('shell-command')) {
-    picks.push('shell-command');
-  }
-  return picks;
+const MEMORY_TOP_K = 5;
+const INSIGHT_TOP_K = 3;
+
+function fileApplicable(task: string): boolean {
+  return /\b(file|folder|directory|workspace)\b/i.test(task);
 }
 
-function summarizeMemory(matches: string[]): string {
-  if (matches.length === 0) {
-    return 'No relevant memory found.';
+function webApplicable(task: string): boolean {
+  return /https?:\/\/\S+/i.test(task);
+}
+
+function shellApplicable(task: string): boolean {
+  if (/`[^`]+`/.test(task)) return true;
+  return /\b(pwd|ls|cat|echo|git)\b/i.test(task);
+}
+
+function chooseSkills(task: string, installed: string[], preferred: string[]): string[] {
+  const picks = new Set<string>();
+  const applicability: Record<string, (task: string) => boolean> = {
+    'file-browser': fileApplicable,
+    'web-fetch': webApplicable,
+    'shell-command': shellApplicable
+  };
+
+  for (const skill of installed) {
+    const check = applicability[skill];
+    if (check && check(task)) picks.add(skill);
   }
-  return `Relevant memory: ${matches.slice(0, 3).join(' | ')}`;
+
+  for (const skill of preferred) {
+    if (!installed.includes(skill)) continue;
+    const check = applicability[skill];
+    if (!check) {
+      picks.add(skill);
+      continue;
+    }
+    if (check(task)) picks.add(skill);
+  }
+
+  return Array.from(picks);
 }
 
-function extractLessons(matches: string[]): string[] {
-  return matches
-    .filter((item) => item.length > 20)
-    .slice(0, 3);
+function summarizeRetrievedMemory(memories: ReturnType<typeof retrieveMemories>): string {
+  if (memories.length === 0) return 'No relevant memory recalled.';
+  return memories
+    .map((entry) => `- (${entry.components.recency.toFixed(2)}r ${entry.components.importance.toFixed(2)}i ${entry.components.relevance.toFixed(2)}v) ${entry.item.content.slice(0, 200)}`)
+    .join('\n');
 }
 
-export async function runTask(task: string): Promise<RunRecord> {
-  const agent = await loadAgent();
-  const installedSkills = await loadInstalledSkills();
-  const memory = await loadMemory();
-  const relevantMemory = memory
-    .filter((item) => task.toLowerCase().split(/\s+/).some((word) => word.length > 3 && item.content.toLowerCase().includes(word)))
-    .map((item) => item.content);
+function summarizeInsights(insights: Insight[]): string {
+  if (insights.length === 0) return 'No applicable insights.';
+  return insights.map((insight) => `- (s=${insight.support} c=${insight.confidence.toFixed(2)}) ${insight.content}`).join('\n');
+}
 
-  const usedSkills = Array.from(new Set([...chooseSkills(task, installedSkills), ...agent.preferredSkills.filter((id) => installedSkills.includes(id))]));
-  const lessons = extractLessons(relevantMemory);
+async function executeAttempt(
+  task: string,
+  attemptNumber: number,
+  retryFeedback: string | null,
+  baseContext: { systemPrompt: string; outputStyle: string; agentName: string; agentGoal: string; usedSkills: string[]; memorySummary: string; insightSummary: string; soulSummary: string }
+): Promise<{ output: string; skillOutputs: string[] }> {
+  const userMessage = [
+    `Task: ${task}`,
+    `Attempt: ${attemptNumber}`,
+    retryFeedback ? `Retry guidance: ${retryFeedback}` : '',
+    `Available skills: ${baseContext.usedSkills.join(', ') || 'none'}`,
+    `Workflow: ${defaultWorkflow.map((step) => `${step.name}: ${step.description}`).join(' | ')}`,
+    `Soul: ${baseContext.soulSummary}`,
+    `Recalled memory:\n${baseContext.memorySummary}`,
+    `Active insights:\n${baseContext.insightSummary}`
+  ].filter(Boolean).join('\n');
 
   const modelResponse = await invokeModel([
-    { role: 'system', content: `${agent.systemPrompt}\nOutput style: ${agent.outputStyle}` },
-    {
-      role: 'user',
-      content: [
-        `Task: ${task}`,
-        `Available skills: ${usedSkills.join(', ') || 'none'}`,
-        `Workflow: ${defaultWorkflow.map((step) => `${step.name}: ${step.description}`).join(' | ')}`,
-        summarizeMemory(relevantMemory),
-        lessons.length > 0 ? `Lessons: ${lessons.join(' | ')}` : 'Lessons: none'
-      ].join('\n')
-    }
+    { role: 'system', content: `${baseContext.systemPrompt}\nOutput style: ${baseContext.outputStyle}` },
+    { role: 'user', content: userMessage }
   ]);
 
-  const skillOutputs = [] as string[];
-  for (const skillId of usedSkills) {
+  const skillOutputs: string[] = [];
+  for (const skillId of baseContext.usedSkills) {
     try {
       const result = await executeSkill(skillId, task);
       skillOutputs.push(`[${result.skillId}] ${result.summary}\n${result.output}`);
@@ -69,51 +108,125 @@ export async function runTask(task: string): Promise<RunRecord> {
   }
 
   const fallbackOutput = [
-    `Agent: ${agent.name}`,
-    `Goal: ${agent.goal}`,
+    `Agent: ${baseContext.agentName}`,
+    `Goal: ${baseContext.agentGoal}`,
     `Task: ${task}`,
-    summarizeMemory(relevantMemory),
-    usedSkills.length > 0
-      ? `Suggested execution path: use ${usedSkills.join(', ')}.`
+    `Attempt: ${attemptNumber}`,
+    retryFeedback ? `Retry guidance: ${retryFeedback}` : '',
+    `Recalled memory:\n${baseContext.memorySummary}`,
+    `Active insights:\n${baseContext.insightSummary}`,
+    baseContext.usedSkills.length > 0
+      ? `Suggested execution path: use ${baseContext.usedSkills.join(', ')}.`
       : 'Suggested execution path: respond directly and request a skill only when needed.',
     skillOutputs.length > 0 ? `Skill output:\n${skillOutputs.join('\n\n')}` : 'No skill output available.',
     'Result: task has been analyzed and prepared for execution in the local runtime.'
-  ].join('\n');
+  ].filter(Boolean).join('\n');
 
-  const output = modelResponse || fallbackOutput;
+  return { output: modelResponse || fallbackOutput, skillOutputs };
+}
 
-  const draftRun = {
+async function maybeEvolve(profile: SoulProfile, config: RuntimeConfig): Promise<{ profile: SoulProfile; insights: Insight[] }> {
+  const cadence = Math.max(1, config.evolution.insightCadence);
+  if (profile.runs === 0 || profile.runs % cadence !== 0) {
+    const insights = await loadInsights();
+    return { profile, insights };
+  }
+  const runs = await loadRuns();
+  const recent = runs.slice(0, Math.max(cadence * 2, 6));
+  const candidates = deriveCandidateInsights(recent);
+  const existing = await loadInsights();
+  const { next } = reconcileInsights(existing, candidates);
+  await saveInsights(next);
+  const evolved = recordEvolution(profile);
+  return { profile: evolved, insights: next };
+}
+
+export async function runTask(task: string): Promise<RunRecord> {
+  const [agent, installedSkills, memory, config, insights, profileRaw] = await Promise.all([
+    loadAgent(),
+    loadInstalledSkills(),
+    loadMemory(),
+    loadConfig(),
+    loadInsights(),
+    loadSoulProfile()
+  ]);
+
+  const usedSkills = chooseSkills(task, installedSkills, agent.preferredSkills);
+  const retrieved = retrieveMemories(memory, task, MEMORY_TOP_K, config);
+  const applicableInsights = selectApplicableInsights(insights, task, INSIGHT_TOP_K);
+
+  const baseContext = {
+    systemPrompt: agent.systemPrompt,
+    outputStyle: agent.outputStyle,
+    agentName: agent.name,
+    agentGoal: agent.goal,
+    usedSkills,
+    memorySummary: summarizeRetrievedMemory(retrieved),
+    insightSummary: summarizeInsights(applicableInsights),
+    soulSummary: profileRaw.identity || `runs=${profileRaw.runs} success=${(profileRaw.successRate * 100).toFixed(1)}%`
+  };
+
+  let attempt = 1;
+  let { output, skillOutputs } = await executeAttempt(task, attempt, null, baseContext);
+  let reflectionDetail: ReflectionResult = evaluateOutcome({ task, output, usedSkills, status: 'completed' });
+
+  if (!reflectionDetail.success && config.evolution.retryOnFailure && config.evolution.maxRetries > 0) {
+    const retryLimit = Math.min(config.evolution.maxRetries, 3);
+    while (!reflectionDetail.success && attempt <= retryLimit) {
+      attempt += 1;
+      const feedback = buildRetryFeedback(reflectionDetail, { task, output, usedSkills });
+      const next = await executeAttempt(task, attempt, feedback, baseContext);
+      output = next.output;
+      skillOutputs = next.skillOutputs;
+      reflectionDetail = evaluateOutcome({ task, output, usedSkills, status: 'completed' });
+    }
+  }
+
+  const status: RunRecord['status'] = reflectionDetail.success ? 'completed' : 'failed';
+  const reflection = summarizeReflection(reflectionDetail, { task, output, usedSkills });
+
+  const draftRun: Omit<RunRecord, 'id' | 'createdAt'> = {
     agent: agent.id,
     task,
     output,
-    status: 'completed' as const,
+    status,
     usedSkills,
-    reflection: ''
+    reflection,
+    attempts: attempt,
+    reflectionDetail,
+    retrievedMemoryIds: retrieved.map((entry) => entry.item.id),
+    appliedInsightIds: applicableInsights.map((insight) => insight.id)
   };
 
-  const reflection = createReflection(draftRun);
-  const storedRun = await appendRun({ ...draftRun, reflection });
+  const storedRun = await appendRun(draftRun);
+  await touchMemory(retrieved.map((entry) => entry.item.id));
 
   await appendMemory({
     kind: 'result',
     task,
     content: output,
-    tags: ['task', 'result']
+    tags: ['task', 'result', status]
   });
 
   await appendMemory({
     kind: 'reflection',
     task,
     content: reflection,
-    tags: ['task', 'reflection']
+    tags: ['task', 'reflection', status]
   });
 
   await appendMemory({
     kind: 'lesson',
     task,
-    content: `Preferred skills: ${usedSkills.join(', ') || 'none'}. ${reflection}`,
-    tags: ['task', 'lesson']
+    content: reflectionDetail.lesson,
+    tags: ['task', 'lesson', ...usedSkills],
+    importance: reflectionDetail.importance
   });
+
+  let updatedProfile = applyRunToSoul(profileRaw, storedRun);
+  const evolution = await maybeEvolve(updatedProfile, config);
+  updatedProfile = refreshIdentity(evolution.profile, agent, evolution.insights);
+  await saveSoulProfile(updatedProfile);
 
   return storedRun;
 }

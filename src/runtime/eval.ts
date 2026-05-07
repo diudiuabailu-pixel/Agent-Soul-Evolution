@@ -11,6 +11,8 @@ export type EvalResult = {
   passed: boolean;
   output: string;
   matched: string[];
+  attempts: number;
+  reflectionSuccess: boolean;
 };
 
 export const defaultEvalSuite: EvalCase[] = [
@@ -22,11 +24,16 @@ export const defaultEvalSuite: EvalCase[] = [
   {
     name: 'shell guidance',
     task: 'Run `pwd` and summarize the current working directory.',
-    expectsAny: ['pwd', '/Users/', 'shell-command']
+    expectsAny: ['pwd', 'shell-command']
+  },
+  {
+    name: 'memory grounding',
+    task: 'Recall any prior lesson about file or shell tasks and apply it.',
+    expectsAny: ['lesson', 'memory', 'recall', 'file-browser', 'shell-command']
   }
 ];
 
-export async function runEvalSuite(): Promise<{ passed: number; total: number; results: EvalResult[] }> {
+export async function runEvalSuite(): Promise<{ passed: number; total: number; results: EvalResult[]; successRate: number }> {
   const results: EvalResult[] = [];
 
   for (const testCase of defaultEvalSuite) {
@@ -36,13 +43,17 @@ export async function runEvalSuite(): Promise<{ passed: number; total: number; r
       name: testCase.name,
       passed: matched.length > 0,
       output: run.output,
-      matched
+      matched,
+      attempts: run.attempts,
+      reflectionSuccess: run.reflectionDetail?.success ?? run.status === 'completed'
     });
   }
 
+  const passed = results.filter((item) => item.passed).length;
   return {
-    passed: results.filter((item) => item.passed).length,
+    passed,
     total: results.length,
-    results
+    results,
+    successRate: results.length > 0 ? passed / results.length : 0
   };
 }

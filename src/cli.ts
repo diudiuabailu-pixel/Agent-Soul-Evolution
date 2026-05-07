@@ -1,14 +1,28 @@
 import { Command } from 'commander';
 import open from 'open';
-import { ensureRuntime, installSkill, loadConfig, loadInstalledSkills, saveConfig } from './runtime/storage.js';
+import {
+  ensureRuntime,
+  installSkill,
+  loadConfig,
+  loadInsights,
+  loadInstalledSkills,
+  loadRuns,
+  loadSoulProfile,
+  loadAgent,
+  saveConfig,
+  saveInsights,
+  saveSoulProfile
+} from './runtime/storage.js';
 import { getSkillManifest } from './skills/catalog.js';
 import { loadAllSkillManifests, installSkillPackage } from './runtime/discovery.js';
 import { runEvalSuite } from './runtime/eval.js';
 import { listOllamaModels } from './runtime/ollama.js';
 import { createServer } from './server.js';
+import { deriveCandidateInsights, reconcileInsights } from './runtime/insights.js';
+import { recordEvolution, refreshIdentity, summarizeSoul } from './runtime/soul.js';
 
 const program = new Command();
-program.name('ase').description('Agent Soul Evolution local runtime').version('0.1.0');
+program.name('ase').description('Agent Soul Evolution local runtime').version('0.2.0');
 
 program.command('init').description('Initialize local runtime files').action(async () => {
   await ensureRuntime();
@@ -19,11 +33,13 @@ program.command('doctor').description('Check local runtime status').action(async
   await ensureRuntime();
   const config = await loadConfig();
   const installed = await loadInstalledSkills();
+  const soul = await loadSoulProfile();
   console.log(`Runtime: ready`);
   console.log(`Port: ${config.server.port}`);
   console.log(`Default model: ${config.models.default.model}`);
   console.log(`Base URL: ${config.models.default.baseUrl}`);
   console.log(`Installed skills: ${installed.join(', ')}`);
+  console.log(`Soul: ${summarizeSoul(soul)}`);
 });
 
 const skill = program.command('skill').description('Manage skills');
@@ -83,6 +99,44 @@ program.command('eval').description('Run the default evaluation suite').action(a
   console.log(`Passed ${result.passed}/${result.total}`);
   for (const item of result.results) {
     console.log(`- ${item.name}: ${item.passed ? 'PASS' : 'FAIL'}${item.matched.length ? ` (${item.matched.join(', ')})` : ''}`);
+  }
+});
+
+program.command('soul').description('Show the current soul profile and top insights').action(async () => {
+  const [soul, insights] = await Promise.all([loadSoulProfile(), loadInsights()]);
+  console.log(summarizeSoul(soul));
+  if (soul.identity) {
+    console.log('---');
+    console.log(soul.identity);
+  }
+  if (insights.length > 0) {
+    console.log('---');
+    console.log('Top insights:');
+    for (const insight of insights.slice(0, 5)) {
+      console.log(`- (s=${insight.support} c=${insight.confidence.toFixed(2)}) ${insight.content}`);
+    }
+  }
+});
+
+program.command('soul:evolve').description('Run an insight extraction cycle over recent runs').action(async () => {
+  const [runs, existing, profile, agent] = await Promise.all([
+    loadRuns(),
+    loadInsights(),
+    loadSoulProfile(),
+    loadAgent()
+  ]);
+  const candidates = deriveCandidateInsights(runs.slice(0, 20));
+  const { next, ops } = reconcileInsights(existing, candidates);
+  await saveInsights(next);
+  const evolved = recordEvolution(profile);
+  const refreshed = refreshIdentity(evolved, agent, next);
+  await saveSoulProfile(refreshed);
+  console.log(`Evolution cycle ${refreshed.generations} complete. ${ops.length} operation(s).`);
+  for (const op of ops) {
+    if (op.kind === 'add') console.log(`+ ADD: ${op.insight.content}`);
+    if (op.kind === 'upvote') console.log(`^ UPVOTE: ${op.id}`);
+    if (op.kind === 'downvote') console.log(`v DOWNVOTE: ${op.id}`);
+    if (op.kind === 'edit') console.log(`~ EDIT: ${op.id}`);
   }
 });
 
