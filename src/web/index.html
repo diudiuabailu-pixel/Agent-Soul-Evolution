@@ -97,7 +97,13 @@
 
       <section class="card">
         <div class="label">Recent runs</div>
+        <button id="runEvalButton" type="button" style="margin:10px 0 14px;">Run evaluation suite</button>
         <ul id="runsList"></ul>
+      </section>
+
+      <section class="card">
+        <div class="label">Run detail</div>
+        <pre id="runDetailOutput">Select a recent run to inspect the full output.</pre>
       </section>
 
       <section class="card">
@@ -139,8 +145,17 @@
       `).join('');
 
       document.getElementById('runsList').innerHTML = state.runs.slice(0, 6).map(run => `
-        <li><strong>${run.task}</strong><br><span>${run.createdAt}</span><br><span>${run.usedSkills.join(', ') || 'no skills'}</span></li>
+        <li data-run-id="${run.id}"><strong>${run.task}</strong><br><span>${run.createdAt}</span><br><span>${run.usedSkills.join(', ') || 'no skills'}</span></li>
       `).join('');
+
+      document.querySelectorAll('#runsList li').forEach((node) => {
+        node.addEventListener('click', async () => {
+          const runId = node.getAttribute('data-run-id');
+          const res = await fetch(`/api/runs/${runId}`);
+          const run = await res.json();
+          document.getElementById('runDetailOutput').textContent = `${run.output}\n\nReflection:\n${run.reflection}`;
+        });
+      });
 
       document.getElementById('memoryList').innerHTML = state.memory.slice(0, 6).map(item => `
         <li><strong>${item.kind}</strong><br><span>${item.content}</span></li>
@@ -212,6 +227,13 @@
         return;
       }
       list.innerHTML = data.models.map(model => `<li><strong>${model.name}</strong><br><span>${model.modified_at || ''}</span></li>`).join('');
+    });
+
+    document.getElementById('runEvalButton').addEventListener('click', async () => {
+      const res = await fetch('/api/eval', { method: 'POST' });
+      const data = await res.json();
+      document.getElementById('runDetailOutput').textContent = `Evaluation suite: ${data.passed}/${data.total} passed\n\n` + data.results.map(item => `${item.name}: ${item.passed ? 'PASS' : 'FAIL'}${item.matched.length ? ` (${item.matched.join(', ')})` : ''}`).join('\n');
+      await loadState();
     });
 
     loadState();

@@ -5,7 +5,9 @@ import { fileURLToPath } from 'node:url';
 import { ensureRuntime, loadMemory, loadRuns, loadInstalledSkills, loadConfig, loadAgent, saveAgent, saveConfig, installSkill } from './runtime/storage.js';
 import { runTask } from './runtime/engine.js';
 import { loadAllSkillManifests, installSkillPackage } from './runtime/discovery.js';
+import { runEvalSuite } from './runtime/eval.js';
 import { listOllamaModels } from './runtime/ollama.js';
+import { getRunById } from './runtime/run-details.js';
 import { defaultWorkflow } from './runtime/workflow.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -71,6 +73,20 @@ export async function createServer() {
     } catch (error) {
       res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
     }
+  });
+
+  app.get('/api/runs/:id', async (req, res) => {
+    const run = await getRunById(req.params.id);
+    if (!run) {
+      res.status(404).json({ error: 'Run not found' });
+      return;
+    }
+    res.json(run);
+  });
+
+  app.post('/api/eval', async (_req, res) => {
+    const result = await runEvalSuite();
+    res.json(result);
   });
 
   app.post('/api/agent', async (req, res) => {

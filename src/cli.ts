@@ -3,6 +3,7 @@ import open from 'open';
 import { ensureRuntime, installSkill, loadConfig, loadInstalledSkills, saveConfig } from './runtime/storage.js';
 import { getSkillManifest } from './skills/catalog.js';
 import { loadAllSkillManifests, installSkillPackage } from './runtime/discovery.js';
+import { runEvalSuite } from './runtime/eval.js';
 import { listOllamaModels } from './runtime/ollama.js';
 import { createServer } from './server.js';
 
@@ -76,6 +77,14 @@ program.command('config:set-model')
     await saveConfig(config);
     console.log(`Updated model to ${options.model} at ${options.baseUrl}`);
   });
+
+program.command('eval').description('Run the default evaluation suite').action(async () => {
+  const result = await runEvalSuite();
+  console.log(`Passed ${result.passed}/${result.total}`);
+  for (const item of result.results) {
+    console.log(`- ${item.name}: ${item.passed ? 'PASS' : 'FAIL'}${item.matched.length ? ` (${item.matched.join(', ')})` : ''}`);
+  }
+});
 
 program.command('start').description('Start local runtime and open the web console').action(async () => {
   await ensureRuntime();

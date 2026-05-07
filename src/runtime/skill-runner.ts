@@ -52,15 +52,14 @@ async function runWebFetch(task: string): Promise<SkillExecution> {
 
 async function runShellCommand(task: string): Promise<SkillExecution> {
   const commandMatch = task.match(/`([^`]+)`/);
-  if (!commandMatch) {
+  const raw = commandMatch?.[1]?.trim() || (task.toLowerCase().includes('pwd') ? 'pwd' : '');
+  if (!raw) {
     return {
       skillId: 'shell-command',
       summary: 'No inline shell command found.',
       output: 'To execute a shell command, include it in backticks inside the task.'
     };
   }
-
-  const raw = commandMatch[1].trim();
   const [command, ...args] = raw.split(/\s+/);
   const allowed = new Set(['pwd', 'ls', 'cat', 'echo', 'git']);
   if (!allowed.has(command)) {

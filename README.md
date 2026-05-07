@@ -43,8 +43,9 @@ node dist/cli.js start
 node dist/cli.js doctor
 node dist/cli.js skill list
 node dist/cli.js skill add web-fetch
-node dist/cli.js skill install-path ./examples/my-skill
+node dist/cli.js skill install-path ./examples/echo-skill
 node dist/cli.js ollama:list
+node dist/cli.js eval
 node dist/cli.js config:set-model --base-url http://localhost:11434/v1 --model qwen2.5:7b
 ```
 
@@ -106,12 +107,14 @@ memory:
 The built-in web console shows:
 
 - Runtime status
-- Enabled skills
+- Enabled and available skills
 - Workflow stages
-- Recent runs
+- Recent runs and per-run detail
 - Stored memory items
 - Agent profile editor
 - Model configuration editor
+- Ollama discovery
+- Evaluation trigger and result summary
 - Reflections produced by the runtime
 
 ## Installing a custom skill package
@@ -135,12 +138,22 @@ node dist/cli.js config:set-model --base-url http://localhost:11434/v1 --model q
 
 When a model is reachable, task runs will use the model response first and fall back to the local planner when the endpoint is unavailable.
 
+## Evaluation
+
+Run the default evaluation suite from the CLI:
+
+```bash
+node dist/cli.js eval
+```
+
+The suite runs a small set of runtime checks against built-in file and shell flows and reports pass/fail results.
+
 ## Roadmap
 
-- Native Ollama model checks
 - Workflow editor
 - Scheduled tasks
-- Evaluation suites and automatic routing
+- Deeper evaluation suites and automatic routing
+- External skill execution hooks
 - Optional multi-agent orchestration
 
 ## License
