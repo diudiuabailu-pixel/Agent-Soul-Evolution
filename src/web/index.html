@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Agent Soul Evolution</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0b1020;
+      --panel: #121935;
+      --panel-soft: #19213f;
+      --line: #2d3a6d;
+      --text: #ecf1ff;
+      --muted: #9db0e6;
+      --accent: #7c9cff;
+      --accent-2: #5de4c7;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Inter, -apple-system, BlinkMacSystemFont, sans-serif;
+      background: linear-gradient(180deg, #0b1020 0%, #10162d 100%);
+      color: var(--text);
+    }
+    .wrap {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 32px 20px 60px;
+    }
+    h1 { margin: 0 0 10px; font-size: 40px; }
+    p { color: var(--muted); }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 16px;
+      margin-top: 24px;
+    }
+    .card {
+      background: rgba(18, 25, 53, 0.95);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: 18px;
+      box-shadow: 0 18px 40px rgba(0,0,0,0.24);
+    }
+    .label { color: var(--accent-2); font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; }
+    .value { margin-top: 10px; font-size: 28px; font-weight: 700; }
+    textarea, input, button {
+      width: 100%;
+      border-radius: 14px;
+      border: 1px solid var(--line);
+      background: var(--panel-soft);
+      color: var(--text);
+      padding: 14px;
+      font: inherit;
+    }
+    button {
+      background: linear-gradient(135deg, var(--accent), #6f7cff);
+      font-weight: 700;
+      cursor: pointer;
+    }
+    ul {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      display: grid;
+      gap: 12px;
+    }
+    li {
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: rgba(255,255,255,0.02);
+    }
+    pre {
+      margin: 0;
+      white-space: pre-wrap;
+      color: #d7e2ff;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Agent Soul Evolution</h1>
+    <p>Local agent runtime with tools, memory, runs, and reflections.</p>
+
+    <div class="grid" id="summary"></div>
+
+    <div class="grid" style="margin-top: 20px;">
+      <section class="card" style="grid-column: span 2;">
+        <div class="label">Run task</div>
+        <div style="margin-top: 14px; display: grid; gap: 12px;">
+          <input id="taskInput" value="Summarize the files in this workspace and suggest the next action." />
+          <button id="runButton">Run task</button>
+          <pre id="runOutput">No task executed yet.</pre>
+        </div>
+      </section>
+
+      <section class="card">
+        <div class="label">Enabled skills</div>
+        <ul id="skillsList"></ul>
+      </section>
+
+      <section class="card">
+        <div class="label">Recent runs</div>
+        <ul id="runsList"></ul>
+      </section>
+
+      <section class="card">
+        <div class="label">Memory</div>
+        <ul id="memoryList"></ul>
+      </section>
+    </div>
+  </div>
+
+  <script>
+    async function loadState() {
+      const res = await fetch('/api/state');
+      const data = await res.json();
+
+      document.getElementById('summary').innerHTML = [
+        ['Runtime', 'Ready'],
+        ['Skills', String(data.skills.length)],
+        ['Runs', String(data.runs.length)],
+        ['Memory Items', String(data.memory.length)]
+      ].map(([label, value]) => `
+        <div class="card">
+          <div class="label">${label}</div>
+          <div class="value">${value}</div>
+        </div>
+      `).join('');
+
+      document.getElementById('skillsList').innerHTML = data.skills.map(skill => `
+        <li><strong>${skill.name}</strong><br><span>${skill.description}</span></li>
+      `).join('');
+
+      document.getElementById('runsList').innerHTML = data.runs.slice(0, 5).map(run => `
+        <li><strong>${run.task}</strong><br><span>${run.createdAt}</span></li>
+      `).join('');
+
+      document.getElementById('memoryList').innerHTML = data.memory.slice(0, 5).map(item => `
+        <li><strong>${item.kind}</strong><br><span>${item.content}</span></li>
+      `).join('');
+    }
+
+    document.getElementById('runButton').addEventListener('click', async () => {
+      const task = document.getElementById('taskInput').value;
+      const res = await fetch('/api/run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ task })
+      });
+      const data = await res.json();
+      document.getElementById('runOutput').textContent = `${data.output}\n\nReflection:\n${data.reflection}`;
+      await loadState();
+    });
+
+    loadState();
+  </script>
+</body>
+</html>
