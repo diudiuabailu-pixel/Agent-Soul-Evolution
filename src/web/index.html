@@ -101,6 +101,9 @@
           <input id="modelBaseUrl" placeholder="Base URL" />
           <input id="modelName" placeholder="Model name" />
           <input id="memoryMaxItems" placeholder="Memory max items" />
+          <label><input type="checkbox" id="useEmbeddingsToggle" /> use embeddings for retrieval</label>
+          <label><input type="checkbox" id="useCheckerModelToggle" /> use model for checker pass</label>
+          <label><input type="checkbox" id="consolidateToggle" /> consolidate memory on evolve</label>
           <div class="hint">Use an OpenAI-compatible endpoint such as Ollama at http://localhost:11434/v1.</div>
           <button id="saveConfigButton">Save config</button>
           <button id="detectOllamaButton" type="button">Detect Ollama models</button>
@@ -162,7 +165,7 @@
       `).join('');
 
       document.getElementById('runsList').innerHTML = state.runs.slice(0, 6).map(run => `
-        <li data-run-id="${run.id}"><strong>${run.task}</strong><br><span>${run.createdAt}</span><br><span>${run.usedSkills.join(', ') || 'no skills'}</span></li>
+        <li data-run-id="${run.id}"><strong>${run.task}</strong><br><span>${run.createdAt}</span><br><span class="badge">${run.status}</span> <span class="badge">attempts=${run.attempts || 1}</span> <span>${run.usedSkills.join(', ') || 'no skills'}</span></li>
       `).join('');
 
       document.querySelectorAll('#runsList li').forEach((node) => {
@@ -170,7 +173,38 @@
           const runId = node.getAttribute('data-run-id');
           const res = await fetch(`/api/runs/${runId}`);
           const run = await res.json();
-          document.getElementById('runDetailOutput').textContent = `${run.output}\n\nReflection:\n${run.reflection}`;
+          const memoryById = new Map((state.memory || []).map(item => [item.id, item]));
+          const insightById = new Map((state.insights || []).map(item => [item.id, item]));
+          const recalled = (run.retrievedMemoryIds || []).map(id => {
+            const mem = memoryById.get(id);
+            if (!mem) return `- ${id} (not present)`;
+            return `- [${mem.kind} i=${mem.importance}] ${mem.content.slice(0, 200)}`;
+          }).join('\n') || '(none)';
+          const insightsApplied = (run.appliedInsightIds || []).map(id => {
+            const ins = insightById.get(id);
+            if (!ins) return `- ${id} (not present)`;
+            return `- (s=${ins.support}) ${ins.content}`;
+          }).join('\n') || '(none)';
+          const checker = run.checkerVerdict
+            ? `Checker: ${run.checkerVerdict.satisfied ? 'satisfied' : 'rejected'} (${run.checkerVerdict.source}, conf=${run.checkerVerdict.confidence.toFixed(2)})\nReason: ${run.checkerVerdict.reason}`
+            : 'Checker: not run';
+          document.getElementById('runDetailOutput').textContent = [
+            `Status: ${run.status} | Attempts: ${run.attempts || 1}`,
+            `Skills: ${run.usedSkills.join(', ') || 'none'}`,
+            checker,
+            '',
+            'Output:',
+            run.output,
+            '',
+            'Reflection:',
+            run.reflection,
+            '',
+            'Recalled memory:',
+            recalled,
+            '',
+            'Applied insights:',
+            insightsApplied
+          ].join('\n');
         });
       });
 
@@ -198,6 +232,9 @@
       document.getElementById('modelBaseUrl').value = state.config.models.default.baseUrl;
       document.getElementById('modelName').value = state.config.models.default.model;
       document.getElementById('memoryMaxItems').value = state.config.memory.maxItems;
+      document.getElementById('useEmbeddingsToggle').checked = !!(state.config.evolution && state.config.evolution.useEmbeddings);
+      document.getElementById('useCheckerModelToggle').checked = !!(state.config.evolution && state.config.evolution.useCheckerModel);
+      document.getElementById('consolidateToggle').checked = !!(state.config.evolution && state.config.evolution.consolidateOnEvolve);
     }
 
     document.getElementById('runButton').addEventListener('click', async () => {
@@ -240,6 +277,11 @@
           },
           memory: {
             maxItems: Number(document.getElementById('memoryMaxItems').value || '500')
+          },
+          evolution: {
+            useEmbeddings: document.getElementById('useEmbeddingsToggle').checked,
+            useCheckerModel: document.getElementById('useCheckerModelToggle').checked,
+            consolidateOnEvolve: document.getElementById('consolidateToggle').checked
           }
         })
       });

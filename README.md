@@ -47,6 +47,10 @@ The runtime will start on `http://localhost:3760`.
 node dist/cli.js init
 node dist/cli.js start
 node dist/cli.js doctor
+node dist/cli.js run "List the files in this workspace"
+node dist/cli.js memory:list -n 10
+node dist/cli.js runs:list -n 10
+node dist/cli.js memory:consolidate
 node dist/cli.js skill list
 node dist/cli.js skill add web-fetch
 node dist/cli.js skill install-path ./examples/echo-skill
@@ -119,7 +123,19 @@ evolution:
   weightRecency: 1
   weightImportance: 1
   weightRelevance: 1
+  useEmbeddings: false
+  useCheckerModel: false
+  consolidateOnEvolve: true
 ```
+
+When `useEmbeddings` is on, the runtime calls the configured endpoint's
+`/embeddings` route to score relevance with cosine similarity (Park et al.
+2023). Token Jaccard is used as the fallback.
+
+When `useCheckerModel` is on, a strict verifier prompt is sent to the model
+after reflection (SAGE-style, Liang et al. 2025). The verifier issues a
+`{ satisfied, confidence, reason }` verdict; success requires both the
+heuristic reflection and the checker to agree.
 
 ## Web console
 
@@ -168,6 +184,16 @@ node dist/cli.js eval
 ```
 
 The suite runs a small set of runtime checks against built-in file and shell flows and reports pass/fail results.
+
+## Tests
+
+```bash
+npm test
+```
+
+Builds and runs the unit suite under Node's built-in test runner. Coverage
+spans memory retrieval scoring, reflection signal detection, insight
+reconciliation, soul aggregation, and the heuristic checker.
 
 ## Roadmap
 

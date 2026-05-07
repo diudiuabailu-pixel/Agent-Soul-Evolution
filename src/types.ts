@@ -30,6 +30,9 @@ export type RuntimeConfig = {
     weightRecency: number;
     weightImportance: number;
     weightRelevance: number;
+    useEmbeddings: boolean;
+    useCheckerModel: boolean;
+    consolidateOnEvolve: boolean;
   };
 };
 
@@ -45,6 +48,7 @@ export type MemoryItem = {
   importance: number;
   accessCount: number;
   lastAccessedAt: string;
+  embedding?: number[];
 };
 
 export type ReflectionResult = {
@@ -53,6 +57,13 @@ export type ReflectionResult = {
   lesson: string;
   importance: number;
   signals: string[];
+};
+
+export type CheckerVerdict = {
+  satisfied: boolean;
+  confidence: number;
+  reason: string;
+  source: 'heuristic' | 'model';
 };
 
 export type RunRecord = {
@@ -68,6 +79,7 @@ export type RunRecord = {
   reflectionDetail?: ReflectionResult;
   retrievedMemoryIds?: string[];
   appliedInsightIds?: string[];
+  checkerVerdict?: CheckerVerdict;
 };
 
 export type AgentProfile = {

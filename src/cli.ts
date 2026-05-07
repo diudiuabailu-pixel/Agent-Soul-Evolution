@@ -6,6 +6,7 @@ import {
   loadConfig,
   loadInsights,
   loadInstalledSkills,
+  loadMemory,
   loadRuns,
   loadSoulProfile,
   loadAgent,
@@ -18,8 +19,10 @@ import { loadAllSkillManifests, installSkillPackage } from './runtime/discovery.
 import { runEvalSuite } from './runtime/eval.js';
 import { listOllamaModels } from './runtime/ollama.js';
 import { createServer } from './server.js';
+import { runTask } from './runtime/engine.js';
 import { deriveCandidateInsights, reconcileInsights } from './runtime/insights.js';
 import { recordEvolution, refreshIdentity, summarizeSoul } from './runtime/soul.js';
+import { consolidateMemory } from './runtime/memory.js';
 
 const program = new Command();
 program.name('ase').description('Agent Soul Evolution local runtime').version('0.2.0');
@@ -92,6 +95,75 @@ program.command('config:set-model')
     config.models.default.model = options.model;
     await saveConfig(config);
     console.log(`Updated model to ${options.model} at ${options.baseUrl}`);
+  });
+
+program.command('run')
+  .description('Run a single task through the runtime')
+  .argument('<task...>')
+  .option('--json', 'Print the full run record as JSON')
+  .action(async (taskParts: string[], options: { json?: boolean }) => {
+    const task = taskParts.join(' ').trim();
+    if (!task) {
+      console.error('Task is required.');
+      process.exit(1);
+    }
+    const run = await runTask(task);
+    if (options.json) {
+      console.log(JSON.stringify(run, null, 2));
+      return;
+    }
+    console.log(`Run ${run.id} (${run.status}, attempts=${run.attempts})`);
+    console.log(`Skills: ${run.usedSkills.join(', ') || 'none'}`);
+    if (run.appliedInsightIds && run.appliedInsightIds.length > 0) {
+      console.log(`Applied insights: ${run.appliedInsightIds.length}`);
+    }
+    if (run.retrievedMemoryIds && run.retrievedMemoryIds.length > 0) {
+      console.log(`Recalled memories: ${run.retrievedMemoryIds.length}`);
+    }
+    console.log('---');
+    console.log(run.output);
+    console.log('---');
+    console.log(`Reflection: ${run.reflection}`);
+  });
+
+program.command('memory:list')
+  .description('Print recent memory items')
+  .option('-n, --limit <n>', 'Max items to show', '10')
+  .action(async (options: { limit?: string }) => {
+    const items = await loadMemory();
+    const limit = Math.max(1, Number(options.limit || 10));
+    for (const item of items.slice(0, limit)) {
+      console.log(`[${item.kind}] i=${item.importance} acc=${item.accessCount} ${item.createdAt}`);
+      console.log(`  task: ${item.task.slice(0, 120)}`);
+      console.log(`  ${item.content.slice(0, 200)}`);
+    }
+  });
+
+program.command('runs:list')
+  .description('Print recent run records')
+  .option('-n, --limit <n>', 'Max runs to show', '10')
+  .action(async (options: { limit?: string }) => {
+    const runs = await loadRuns();
+    const limit = Math.max(1, Number(options.limit || 10));
+    for (const run of runs.slice(0, limit)) {
+      console.log(`${run.id} ${run.status} attempts=${run.attempts} ${run.createdAt}`);
+      console.log(`  task: ${run.task.slice(0, 120)}`);
+      console.log(`  skills: ${run.usedSkills.join(', ') || 'none'}`);
+    }
+  });
+
+program.command('memory:consolidate')
+  .description('Merge highly similar memories to compress long-term store')
+  .action(async () => {
+    const items = await loadMemory();
+    const result = consolidateMemory(items);
+    if (result.merged === 0) {
+      console.log('No memories were merged.');
+      return;
+    }
+    const { saveMemoryItems } = await import('./runtime/storage.js');
+    await saveMemoryItems(result.items);
+    console.log(`Merged ${result.merged} memory item(s); now ${result.items.length} stored.`);
   });
 
 program.command('eval').description('Run the default evaluation suite').action(async () => {

@@ -46,7 +46,10 @@ const defaultConfig: RuntimeConfig = {
     recencyHalfLifeHours: 168,
     weightRecency: 1,
     weightImportance: 1,
-    weightRelevance: 1
+    weightRelevance: 1,
+    useEmbeddings: false,
+    useCheckerModel: false,
+    consolidateOnEvolve: true
   }
 };
 
@@ -91,7 +94,8 @@ function normalizeMemoryItem(raw: Partial<MemoryItem> & { content?: string; task
     tags: Array.isArray(raw.tags) ? raw.tags : [],
     importance,
     accessCount: typeof raw.accessCount === 'number' ? raw.accessCount : 0,
-    lastAccessedAt: typeof raw.lastAccessedAt === 'string' ? raw.lastAccessedAt : createdAt
+    lastAccessedAt: typeof raw.lastAccessedAt === 'string' ? raw.lastAccessedAt : createdAt,
+    embedding: Array.isArray(raw.embedding) ? raw.embedding : undefined
   };
 }
 
@@ -164,6 +168,20 @@ export async function appendMemory(item: Omit<MemoryItem, 'id' | 'createdAt' | '
   return record;
 }
 
+export async function saveMemoryItems(items: MemoryItem[]): Promise<void> {
+  await ensureRuntime();
+  const config = await loadConfig();
+  await fs.writeJson(memoryPath, items.slice(0, config.memory.maxItems), { spaces: 2 });
+}
+
+export async function updateMemoryEmbedding(id: string, embedding: number[]): Promise<void> {
+  const items = await loadMemory();
+  const target = items.find((item) => item.id === id);
+  if (!target) return;
+  target.embedding = embedding;
+  await fs.writeJson(memoryPath, items, { spaces: 2 });
+}
+
 export async function touchMemory(ids: string[]): Promise<void> {
   if (ids.length === 0) return;
   const items = await loadMemory();
@@ -195,7 +213,8 @@ export async function loadRuns(): Promise<RunRecord[]> {
     attempts: typeof run.attempts === 'number' ? run.attempts : 1,
     reflectionDetail: run.reflectionDetail,
     retrievedMemoryIds: Array.isArray(run.retrievedMemoryIds) ? run.retrievedMemoryIds : [],
-    appliedInsightIds: Array.isArray(run.appliedInsightIds) ? run.appliedInsightIds : []
+    appliedInsightIds: Array.isArray(run.appliedInsightIds) ? run.appliedInsightIds : [],
+    checkerVerdict: run.checkerVerdict
   }));
 }
 

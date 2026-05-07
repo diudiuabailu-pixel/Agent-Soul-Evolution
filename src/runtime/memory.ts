@@ -57,11 +57,13 @@ export function scoreMemory(
   item: MemoryItem,
   queryTokens: Set<string>,
   now: Date,
-  config: RuntimeConfig
+  config: RuntimeConfig,
+  queryEmbedding?: number[]
 ): ScoredMemory {
   const recency = recencyScore(item.lastAccessedAt || item.createdAt, now, config.evolution.recencyHalfLifeHours);
   const importance = normalizeImportance(item.importance);
-  const relevance = jaccard(queryTokens, tokenSet(`${item.task} ${item.content}`));
+  const itemTokens = tokenSet(`${item.task} ${item.content}`);
+  const relevance = relevanceScore(itemTokens, queryTokens, item.embedding, queryEmbedding);
   const score =
     config.evolution.weightRecency * recency +
     config.evolution.weightImportance * importance +
@@ -74,14 +76,85 @@ export function retrieveMemories(
   query: string,
   k: number,
   config: RuntimeConfig,
-  now: Date = new Date()
+  now: Date = new Date(),
+  queryEmbedding?: number[]
 ): ScoredMemory[] {
   const queryTokens = tokenSet(query);
   return items
-    .map((item) => scoreMemory(item, queryTokens, now, config))
+    .map((item) => scoreMemory(item, queryTokens, now, config, queryEmbedding))
     .filter((scored) => scored.score > 0)
     .sort((a, b) => b.score - a.score)
     .slice(0, Math.max(0, k));
+}
+
+export function cosineSimilarity(a: number[] | undefined, b: number[] | undefined): number {
+  if (!a || !b || a.length === 0 || a.length !== b.length) return 0;
+  let dot = 0;
+  let normA = 0;
+  let normB = 0;
+  for (let i = 0; i < a.length; i += 1) {
+    dot += a[i] * b[i];
+    normA += a[i] * a[i];
+    normB += b[i] * b[i];
+  }
+  if (normA === 0 || normB === 0) return 0;
+  return dot / (Math.sqrt(normA) * Math.sqrt(normB));
+}
+
+export function relevanceScore(
+  itemTokens: Set<string>,
+  queryTokens: Set<string>,
+  itemEmbedding: number[] | undefined,
+  queryEmbedding: number[] | undefined
+): number {
+  const tokenScore = jaccard(itemTokens, queryTokens);
+  if (!itemEmbedding || !queryEmbedding) return tokenScore;
+  const cosine = Math.max(0, cosineSimilarity(itemEmbedding, queryEmbedding));
+  return 0.7 * cosine + 0.3 * tokenScore;
+}
+
+export type MemoryConsolidationResult = {
+  items: MemoryItem[];
+  merged: number;
+};
+
+const CONSOLIDATION_THRESHOLD = 0.75;
+
+export function consolidateMemory(items: MemoryItem[]): MemoryConsolidationResult {
+  const buckets: Array<{ representative: MemoryItem; cluster: MemoryItem[] }> = [];
+  for (const item of items) {
+    const tokens = tokenSet(`${item.task} ${item.content}`);
+    let placed = false;
+    for (const bucket of buckets) {
+      if (bucket.representative.kind !== item.kind) continue;
+      const repTokens = tokenSet(`${bucket.representative.task} ${bucket.representative.content}`);
+      const overlap = jaccard(tokens, repTokens);
+      if (overlap >= CONSOLIDATION_THRESHOLD) {
+        bucket.cluster.push(item);
+        placed = true;
+        break;
+      }
+    }
+    if (!placed) buckets.push({ representative: item, cluster: [item] });
+  }
+  let merged = 0;
+  const condensed = buckets.map((bucket) => {
+    if (bucket.cluster.length === 1) return bucket.representative;
+    merged += bucket.cluster.length - 1;
+    const sorted = [...bucket.cluster].sort((a, b) => b.importance - a.importance);
+    const head = sorted[0];
+    const importance = Math.min(10, Math.max(...sorted.map((entry) => entry.importance)) + 1);
+    const accessCount = sorted.reduce((sum, entry) => sum + entry.accessCount, 0);
+    const tags = Array.from(new Set(sorted.flatMap((entry) => entry.tags))).slice(0, 8);
+    return {
+      ...head,
+      importance,
+      accessCount,
+      tags,
+      content: head.content
+    };
+  });
+  return { items: condensed, merged };
 }
 
 export function estimateImportance(content: string, task: string, kind: string): number {

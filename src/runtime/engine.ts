@@ -9,17 +9,27 @@ import {
   loadRuns,
   loadSoulProfile,
   saveInsights,
+  saveMemoryItems,
   saveSoulProfile,
-  touchMemory
+  touchMemory,
+  updateMemoryEmbedding
 } from './storage.js';
 import { buildRetryFeedback, evaluateOutcome, summarizeReflection } from './reflection.js';
-import { invokeModel } from './model.js';
+import { invokeEmbedding, invokeModel } from './model.js';
 import { executeSkill } from './skill-runner.js';
 import { defaultWorkflow } from './workflow.js';
-import { retrieveMemories } from './memory.js';
+import { consolidateMemory, retrieveMemories } from './memory.js';
 import { deriveCandidateInsights, reconcileInsights, selectApplicableInsights } from './insights.js';
 import { applyRunToSoul, recordEvolution, refreshIdentity } from './soul.js';
-import type { Insight, ReflectionResult, RunRecord, RuntimeConfig, SoulProfile } from '../types.js';
+import { checkRunOutcome } from './checker.js';
+import type {
+  CheckerVerdict,
+  Insight,
+  ReflectionResult,
+  RunRecord,
+  RuntimeConfig,
+  SoulProfile
+} from '../types.js';
 
 const MEMORY_TOP_K = 5;
 const INSIGHT_TOP_K = 3;
@@ -125,11 +135,11 @@ async function executeAttempt(
   return { output: modelResponse || fallbackOutput, skillOutputs };
 }
 
-async function maybeEvolve(profile: SoulProfile, config: RuntimeConfig): Promise<{ profile: SoulProfile; insights: Insight[] }> {
+async function maybeEvolve(profile: SoulProfile, config: RuntimeConfig): Promise<{ profile: SoulProfile; insights: Insight[]; consolidated: number }> {
   const cadence = Math.max(1, config.evolution.insightCadence);
   if (profile.runs === 0 || profile.runs % cadence !== 0) {
     const insights = await loadInsights();
-    return { profile, insights };
+    return { profile, insights, consolidated: 0 };
   }
   const runs = await loadRuns();
   const recent = runs.slice(0, Math.max(cadence * 2, 6));
@@ -137,8 +147,17 @@ async function maybeEvolve(profile: SoulProfile, config: RuntimeConfig): Promise
   const existing = await loadInsights();
   const { next } = reconcileInsights(existing, candidates);
   await saveInsights(next);
+  let consolidated = 0;
+  if (config.evolution.consolidateOnEvolve) {
+    const memory = await loadMemory();
+    const result = consolidateMemory(memory);
+    if (result.merged > 0) {
+      await saveMemoryItems(result.items);
+      consolidated = result.merged;
+    }
+  }
   const evolved = recordEvolution(profile);
-  return { profile: evolved, insights: next };
+  return { profile: evolved, insights: next, consolidated };
 }
 
 export async function runTask(task: string): Promise<RunRecord> {
@@ -152,7 +171,8 @@ export async function runTask(task: string): Promise<RunRecord> {
   ]);
 
   const usedSkills = chooseSkills(task, installedSkills, agent.preferredSkills);
-  const retrieved = retrieveMemories(memory, task, MEMORY_TOP_K, config);
+  const queryEmbedding = config.evolution.useEmbeddings ? (await invokeEmbedding(task)) ?? undefined : undefined;
+  const retrieved = retrieveMemories(memory, task, MEMORY_TOP_K, config, new Date(), queryEmbedding);
   const applicableInsights = selectApplicableInsights(insights, task, INSIGHT_TOP_K);
 
   const baseContext = {
@@ -182,8 +202,13 @@ export async function runTask(task: string): Promise<RunRecord> {
     }
   }
 
-  const status: RunRecord['status'] = reflectionDetail.success ? 'completed' : 'failed';
-  const reflection = summarizeReflection(reflectionDetail, { task, output, usedSkills });
+  const checkerVerdict: CheckerVerdict = await checkRunOutcome(task, output, reflectionDetail, {
+    useModel: config.evolution.useCheckerModel
+  });
+
+  const ratifiedSuccess = reflectionDetail.success && checkerVerdict.satisfied;
+  const status: RunRecord['status'] = ratifiedSuccess ? 'completed' : 'failed';
+  const reflection = `${summarizeReflection(reflectionDetail, { task, output, usedSkills })} Checker: ${checkerVerdict.satisfied ? 'satisfied' : 'rejected'} (${checkerVerdict.source}, conf=${checkerVerdict.confidence.toFixed(2)}); ${checkerVerdict.reason}`;
 
   const draftRun: Omit<RunRecord, 'id' | 'createdAt'> = {
     agent: agent.id,
@@ -193,35 +218,42 @@ export async function runTask(task: string): Promise<RunRecord> {
     usedSkills,
     reflection,
     attempts: attempt,
-    reflectionDetail,
+    reflectionDetail: { ...reflectionDetail, success: ratifiedSuccess },
     retrievedMemoryIds: retrieved.map((entry) => entry.item.id),
-    appliedInsightIds: applicableInsights.map((insight) => insight.id)
+    appliedInsightIds: applicableInsights.map((insight) => insight.id),
+    checkerVerdict
   };
 
   const storedRun = await appendRun(draftRun);
   await touchMemory(retrieved.map((entry) => entry.item.id));
 
-  await appendMemory({
+  const resultMemory = await appendMemory({
     kind: 'result',
     task,
     content: output,
     tags: ['task', 'result', status]
   });
-
-  await appendMemory({
+  const reflectionMemory = await appendMemory({
     kind: 'reflection',
     task,
     content: reflection,
     tags: ['task', 'reflection', status]
   });
-
-  await appendMemory({
+  const lessonMemory = await appendMemory({
     kind: 'lesson',
     task,
     content: reflectionDetail.lesson,
     tags: ['task', 'lesson', ...usedSkills],
     importance: reflectionDetail.importance
   });
+
+  if (config.evolution.useEmbeddings) {
+    const targets = [resultMemory, lessonMemory, reflectionMemory];
+    for (const target of targets) {
+      const embedding = await invokeEmbedding(`${target.task}\n${target.content}`);
+      if (embedding) await updateMemoryEmbedding(target.id, embedding);
+    }
+  }
 
   let updatedProfile = applyRunToSoul(profileRaw, storedRun);
   const evolution = await maybeEvolve(updatedProfile, config);

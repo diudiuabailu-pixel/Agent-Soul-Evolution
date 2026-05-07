@@ -59,15 +59,42 @@ implicit preference encoded in extracted insights. This keeps the runtime free
 of an external skill discovery loop while still letting practical experience
 shape future routing.
 
+## Optional embedding-based relevance
+
+`config.evolution.useEmbeddings` activates a second relevance channel.
+`relevanceScore` blends 70% cosine similarity (Park et al. 2023, original
+specification) with 30% token Jaccard. New `result`, `lesson`, and
+`reflection` memories are embedded asynchronously after each run via the
+configured endpoint's `/embeddings` route. If the endpoint does not implement
+embeddings, the fallback is graceful — relevance silently reverts to token
+Jaccard.
+
+## Outcome verification (SAGE Checker)
+
+`config.evolution.useCheckerModel` activates a second-pass verifier inspired
+by the Checker role in SAGE (Liang et al. 2025). After reflection, a strict
+prompt asks the model to emit a JSON verdict
+`{ satisfied, confidence, reason }`. A run is recorded as `completed` only
+when reflection and the checker agree. When the model is unavailable or its
+output cannot be parsed as JSON, a heuristic checker (token coverage of the
+task by the output) issues a fallback verdict.
+
+## Memory consolidation
+
+`config.evolution.consolidateOnEvolve` runs `consolidateMemory` whenever the
+soul reaches an evolution cadence. Items of the same kind whose token Jaccard
+exceeds 0.75 are merged into the most-important representative. This
+implements the "consolidation" step described both in SAGE and in the A-Mem
+agentic memory work (Xu et al. 2025).
+
 ## What is intentionally not implemented
 
-- Embedding-based retrieval — the runtime is single-binary and embedding-free
-  on purpose. Token Jaccard is a reasonable substitute at this scale and can
-  be replaced by an embedding store later.
-- Tree-search self-correction (Agent-R, AgentEvol) — these require a verifier
-  and significantly more compute than a local CLI should impose.
+- Tree-search self-correction (Agent-R, AgentEvol) — these require a stronger
+  verifier and significantly more compute than a local CLI should impose.
 - LLM-graded importance — supported via `estimateImportance` override, but not
   on by default to keep evolution working when the model endpoint is offline.
+- Voyager-style code skill synthesis — could land later as an automated
+  `/api/skills/synthesize` endpoint that emits new skill packages.
 
 ## Reading list
 
