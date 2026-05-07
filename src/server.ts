@@ -2,9 +2,10 @@ import express from 'express';
 import cors from 'cors';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ensureRuntime, loadMemory, loadRuns, loadInstalledSkills, loadConfig, loadAgent, saveAgent, saveConfig } from './runtime/storage.js';
-import { skillCatalog } from './skills/catalog.js';
+import { ensureRuntime, loadMemory, loadRuns, loadInstalledSkills, loadConfig, loadAgent, saveAgent, saveConfig, installSkill } from './runtime/storage.js';
 import { runTask } from './runtime/engine.js';
+import { loadAllSkillManifests, installSkillPackage } from './runtime/discovery.js';
+import { listOllamaModels } from './runtime/ollama.js';
 import { defaultWorkflow } from './runtime/workflow.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -21,19 +22,20 @@ export async function createServer() {
   app.use(express.static(webRoot));
 
   app.get('/api/state', async (_req, res) => {
-    const [memory, runs, installedSkills, agent, currentConfig] = await Promise.all([
+    const [memory, runs, installedSkills, agent, currentConfig, allSkills] = await Promise.all([
       loadMemory(),
       loadRuns(),
       loadInstalledSkills(),
       loadAgent(),
-      loadConfig()
+      loadConfig(),
+      loadAllSkillManifests()
     ]);
 
     const skills = installedSkills
-      .map((id) => skillCatalog.find((skill) => skill.id === id))
+      .map((id) => allSkills.find((skill) => skill.id === id))
       .filter(Boolean);
 
-    res.json({ memory, runs, skills, agent, config: currentConfig, workflow: defaultWorkflow });
+    res.json({ memory, runs, skills, agent, config: currentConfig, workflow: defaultWorkflow, availableSkills: allSkills });
   });
 
   app.post('/api/run', async (req, res) => {
@@ -45,6 +47,30 @@ export async function createServer() {
 
     const run = await runTask(task);
     res.json(run);
+  });
+
+  app.get('/api/ollama/models', async (_req, res) => {
+    try {
+      const models = await listOllamaModels();
+      res.json({ models });
+    } catch (error) {
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  app.post('/api/skills/install-path', async (req, res) => {
+    try {
+      const sourceDir = String(req.body?.sourceDir || '').trim();
+      if (!sourceDir) {
+        res.status(400).json({ error: 'sourceDir is required' });
+        return;
+      }
+      const manifest = await installSkillPackage(sourceDir);
+      await installSkill(manifest.id);
+      res.json({ manifest });
+    } catch (error) {
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
   });
 
   app.post('/api/agent', async (req, res) => {

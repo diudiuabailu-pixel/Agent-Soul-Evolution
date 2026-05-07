@@ -1,6 +1,7 @@
 import { appendMemory, appendRun, loadAgent, loadInstalledSkills, loadMemory } from './storage.js';
 import { createReflection } from './reflection.js';
 import { invokeModel } from './model.js';
+import { executeSkill } from './skill-runner.js';
 import { defaultWorkflow } from './workflow.js';
 import type { RunRecord } from '../types.js';
 
@@ -57,7 +58,17 @@ export async function runTask(task: string): Promise<RunRecord> {
     }
   ]);
 
-  const output = modelResponse || [
+  const skillOutputs = [] as string[];
+  for (const skillId of usedSkills) {
+    try {
+      const result = await executeSkill(skillId, task);
+      skillOutputs.push(`[${result.skillId}] ${result.summary}\n${result.output}`);
+    } catch (error) {
+      skillOutputs.push(`[${skillId}] Execution failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  const fallbackOutput = [
     `Agent: ${agent.name}`,
     `Goal: ${agent.goal}`,
     `Task: ${task}`,
@@ -65,8 +76,11 @@ export async function runTask(task: string): Promise<RunRecord> {
     usedSkills.length > 0
       ? `Suggested execution path: use ${usedSkills.join(', ')}.`
       : 'Suggested execution path: respond directly and request a skill only when needed.',
+    skillOutputs.length > 0 ? `Skill output:\n${skillOutputs.join('\n\n')}` : 'No skill output available.',
     'Result: task has been analyzed and prepared for execution in the local runtime.'
   ].join('\n');
+
+  const output = modelResponse || fallbackOutput;
 
   const draftRun = {
     agent: agent.id,

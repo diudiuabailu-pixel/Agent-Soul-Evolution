@@ -6,6 +6,7 @@ Agent Soul Evolution is an open-source local agent runtime for running task-focu
 
 - Connects to local or remote OpenAI-compatible models, including Ollama-compatible endpoints
 - Runs agents through a lightweight runtime
+- Executes built-in file, web, and shell skills during task runs
 - Uses installable skills to extend what agents can do
 - Stores results, reflections, and lessons as memory
 - Generates reflections after each task
@@ -42,14 +43,16 @@ node dist/cli.js start
 node dist/cli.js doctor
 node dist/cli.js skill list
 node dist/cli.js skill add web-fetch
+node dist/cli.js skill install-path ./examples/my-skill
+node dist/cli.js ollama:list
 node dist/cli.js config:set-model --base-url http://localhost:11434/v1 --model qwen2.5:7b
 ```
 
 ## Default skills
 
-- `file-browser`
-- `web-fetch`
-- `shell-command`
+- `file-browser` — scans visible workspace entries
+- `web-fetch` — fetches readable text when a task includes a URL
+- `shell-command` — executes allowlisted commands wrapped in backticks
 
 ## Project structure
 
@@ -74,6 +77,8 @@ The runtime stores local state in `./.runtime`.
   memory/
   runs/
   skills/
+    installed.json
+    packages/
 ```
 
 ## Configuration
@@ -108,6 +113,16 @@ The built-in web console shows:
 - Agent profile editor
 - Model configuration editor
 - Reflections produced by the runtime
+
+## Installing a custom skill package
+
+A skill package is a directory that contains a `skill.json` manifest. Install it with:
+
+```bash
+node dist/cli.js skill install-path /absolute/path/to/skill-package
+```
+
+The runtime copies the package into `.runtime/skills/packages/` and makes it visible in the console.
 
 ## Using a local model
 

@@ -61,6 +61,11 @@
       </section>
 
       <section class="card">
+        <div class="label">Available skills</div>
+        <ul id="availableSkillsList"></ul>
+      </section>
+
+      <section class="card">
         <div class="label">Workflow</div>
         <ul id="workflowList"></ul>
       </section>
@@ -85,6 +90,8 @@
           <input id="memoryMaxItems" placeholder="Memory max items" />
           <div class="hint">Use an OpenAI-compatible endpoint such as Ollama at http://localhost:11434/v1.</div>
           <button id="saveConfigButton">Save config</button>
+          <button id="detectOllamaButton" type="button">Detect Ollama models</button>
+          <ul id="ollamaModelsList"></ul>
         </div>
       </section>
 
@@ -121,6 +128,10 @@
 
       document.getElementById('skillsList').innerHTML = state.skills.map(skill => `
         <li><strong>${skill.name}</strong><br><span>${skill.description}</span></li>
+      `).join('');
+
+      document.getElementById('availableSkillsList').innerHTML = state.availableSkills.map(skill => `
+        <li><strong>${skill.name}</strong><br><span>${skill.id}</span><br><span>${skill.description}</span></li>
       `).join('');
 
       document.getElementById('workflowList').innerHTML = state.workflow.map(step => `
@@ -190,6 +201,17 @@
         })
       });
       await loadState();
+    });
+
+    document.getElementById('detectOllamaButton').addEventListener('click', async () => {
+      const res = await fetch('/api/ollama/models');
+      const data = await res.json();
+      const list = document.getElementById('ollamaModelsList');
+      if (!data.models || data.models.length === 0) {
+        list.innerHTML = '<li>No local Ollama models detected.</li>';
+        return;
+      }
+      list.innerHTML = data.models.map(model => `<li><strong>${model.name}</strong><br><span>${model.modified_at || ''}</span></li>`).join('');
     });
 
     loadState();

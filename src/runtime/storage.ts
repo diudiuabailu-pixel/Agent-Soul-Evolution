@@ -1,7 +1,7 @@
 import fs from 'fs-extra';
 import yaml from 'js-yaml';
 import { nanoid } from 'nanoid';
-import { agentsPath, configPath, installedSkillsPath, memoryPath, runsPath, runtimeRoot } from './paths.js';
+import { agentsPath, configPath, installedSkillsPath, memoryPath, runsPath, runtimeRoot, skillPackagesRoot } from './paths.js';
 import type { AgentProfile, MemoryItem, RunRecord, RuntimeConfig } from '../types.js';
 
 const defaultConfig: RuntimeConfig = {
@@ -36,6 +36,7 @@ export async function ensureRuntime(): Promise<void> {
   await fs.ensureDir(runtimeRoot + '/runs');
   await fs.ensureDir(runtimeRoot + '/agents');
   await fs.ensureDir(runtimeRoot + '/skills');
+  await fs.ensureDir(skillPackagesRoot);
 
   if (!(await fs.pathExists(configPath))) {
     await fs.writeFile(configPath, yaml.dump(defaultConfig), 'utf8');

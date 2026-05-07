@@ -1,7 +1,9 @@
 import { Command } from 'commander';
 import open from 'open';
 import { ensureRuntime, installSkill, loadConfig, loadInstalledSkills, saveConfig } from './runtime/storage.js';
-import { skillCatalog, getSkillManifest } from './skills/catalog.js';
+import { getSkillManifest } from './skills/catalog.js';
+import { loadAllSkillManifests, installSkillPackage } from './runtime/discovery.js';
+import { listOllamaModels } from './runtime/ollama.js';
 import { createServer } from './server.js';
 
 const program = new Command();
@@ -25,8 +27,9 @@ program.command('doctor').description('Check local runtime status').action(async
 
 const skill = program.command('skill').description('Manage skills');
 
-skill.command('list').action(() => {
-  for (const item of skillCatalog) {
+skill.command('list').action(async () => {
+  const skills = await loadAllSkillManifests();
+  for (const item of skills) {
     console.log(`${item.id} - ${item.description}`);
   }
 });
@@ -39,6 +42,27 @@ skill.command('add').argument('<id>').action(async (id: string) => {
   }
   await installSkill(id);
   console.log(`Installed skill: ${id}`);
+});
+
+skill.command('install-path').argument('<dir>').action(async (dir: string) => {
+  const manifest = await installSkillPackage(dir);
+  await installSkill(manifest.id);
+  console.log(`Installed skill package: ${manifest.id}`);
+});
+
+program.command('ollama:list').description('List local Ollama models').action(async () => {
+  try {
+    const models = await listOllamaModels();
+    if (models.length === 0) {
+      console.log('No Ollama models found.');
+      return;
+    }
+    for (const model of models) {
+      console.log(`${model.name}${model.modified_at ? ` - ${model.modified_at}` : ''}`);
+    }
+  } catch (error) {
+    console.log(`Ollama is not reachable: ${error instanceof Error ? error.message : String(error)}`);
+  }
 });
 
 program.command('config:set-model')
