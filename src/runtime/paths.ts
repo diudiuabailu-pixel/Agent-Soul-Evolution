@@ -11,3 +11,5 @@ export const skillPackagesRoot = path.join(runtimeRoot, 'skills', 'packages');
 export const soulRoot = path.join(runtimeRoot, 'soul');
 export const insightsPath = path.join(soulRoot, 'insights.json');
 export const soulProfilePath = path.join(soulRoot, 'profile.json');
+export const embeddingsCachePath = path.join(runtimeRoot, 'memory', 'embeddings.json');
+export const playbooksPath = path.join(soulRoot, 'playbooks.json');

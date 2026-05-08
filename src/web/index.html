@@ -69,6 +69,12 @@
       </section>
 
       <section class="card">
+        <div class="label">Playbooks</div>
+        <ul id="playbooksList"></ul>
+        <button id="synthesizePlaybooksButton" type="button" style="margin-top: 10px;">Synthesize playbooks</button>
+      </section>
+
+      <section class="card">
         <div class="label">Enabled skills</div>
         <ul id="skillsList"></ul>
       </section>
@@ -104,6 +110,10 @@
           <label><input type="checkbox" id="useEmbeddingsToggle" /> use embeddings for retrieval</label>
           <label><input type="checkbox" id="useCheckerModelToggle" /> use model for checker pass</label>
           <label><input type="checkbox" id="consolidateToggle" /> consolidate memory on evolve</label>
+          <label><input type="checkbox" id="useLlmImportanceToggle" /> use model to grade importance</label>
+          <label><input type="checkbox" id="linkMemoriesToggle" /> link memories on write</label>
+          <label><input type="checkbox" id="oneHopToggle" /> expand retrieval one hop</label>
+          <label><input type="checkbox" id="synthesizePlaybooksToggle" /> synthesize playbooks on evolve</label>
           <div class="hint">Use an OpenAI-compatible endpoint such as Ollama at http://localhost:11434/v1.</div>
           <button id="saveConfigButton">Save config</button>
           <button id="detectOllamaButton" type="button">Detect Ollama models</button>
@@ -219,6 +229,13 @@
           <li><span class="badge">support=${insight.support}</span> <span class="badge">conf=${insight.confidence.toFixed(2)}</span><br><span>${insight.content}</span></li>
         `).join('');
 
+      const playbooks = state.playbooks || [];
+      document.getElementById('playbooksList').innerHTML = playbooks.length === 0
+        ? '<li>No playbooks synthesized yet. Run several similar successful tasks first.</li>'
+        : playbooks.slice(0, 6).map(playbook => `
+          <li><strong>${playbook.title}</strong><br><span class="badge">support=${playbook.support}</span> <span class="badge">success=${(playbook.successRate * 100).toFixed(0)}%</span><br><span>trigger: ${playbook.trigger || 'none'}</span><br><span>skills: ${playbook.suggestedSkills.join(', ') || 'none'}</span></li>
+        `).join('');
+
       document.getElementById('soulIdentity').textContent = state.soul && state.soul.identity
         ? state.soul.identity
         : 'Soul has not formed yet. Run a task to begin evolution.';
@@ -235,6 +252,10 @@
       document.getElementById('useEmbeddingsToggle').checked = !!(state.config.evolution && state.config.evolution.useEmbeddings);
       document.getElementById('useCheckerModelToggle').checked = !!(state.config.evolution && state.config.evolution.useCheckerModel);
       document.getElementById('consolidateToggle').checked = !!(state.config.evolution && state.config.evolution.consolidateOnEvolve);
+      document.getElementById('useLlmImportanceToggle').checked = !!(state.config.evolution && state.config.evolution.useLlmImportance);
+      document.getElementById('linkMemoriesToggle').checked = !!(state.config.evolution && state.config.evolution.linkMemoriesOnWrite);
+      document.getElementById('oneHopToggle').checked = !!(state.config.evolution && state.config.evolution.oneHopExpansion);
+      document.getElementById('synthesizePlaybooksToggle').checked = !!(state.config.evolution && state.config.evolution.synthesizePlaybooks);
     }
 
     document.getElementById('runButton').addEventListener('click', async () => {
@@ -281,7 +302,11 @@
           evolution: {
             useEmbeddings: document.getElementById('useEmbeddingsToggle').checked,
             useCheckerModel: document.getElementById('useCheckerModelToggle').checked,
-            consolidateOnEvolve: document.getElementById('consolidateToggle').checked
+            consolidateOnEvolve: document.getElementById('consolidateToggle').checked,
+            useLlmImportance: document.getElementById('useLlmImportanceToggle').checked,
+            linkMemoriesOnWrite: document.getElementById('linkMemoriesToggle').checked,
+            oneHopExpansion: document.getElementById('oneHopToggle').checked,
+            synthesizePlaybooks: document.getElementById('synthesizePlaybooksToggle').checked
           }
         })
       });
@@ -297,6 +322,13 @@
         return;
       }
       list.innerHTML = data.models.map(model => `<li><strong>${model.name}</strong><br><span>${model.modified_at || ''}</span></li>`).join('');
+    });
+
+    document.getElementById('synthesizePlaybooksButton').addEventListener('click', async () => {
+      const res = await fetch('/api/playbooks/synthesize', { method: 'POST' });
+      const data = await res.json();
+      document.getElementById('runDetailOutput').textContent = `Playbooks: now ${data.playbooks.length} stored. Added ${data.added}.`;
+      await loadState();
     });
 
     document.getElementById('evolveButton').addEventListener('click', async () => {

@@ -80,11 +80,55 @@ export function retrieveMemories(
   queryEmbedding?: number[]
 ): ScoredMemory[] {
   const queryTokens = tokenSet(query);
-  return items
+  const base = items
     .map((item) => scoreMemory(item, queryTokens, now, config, queryEmbedding))
     .filter((scored) => scored.score > 0)
     .sort((a, b) => b.score - a.score)
     .slice(0, Math.max(0, k));
+
+  if (!config.evolution.oneHopExpansion || base.length === 0) return base;
+
+  const seen = new Set(base.map((entry) => entry.item.id));
+  const lookup = new Map(items.map((item) => [item.id, item]));
+  const additions: ScoredMemory[] = [];
+  for (const entry of base) {
+    const links = entry.item.links || [];
+    for (const id of links.slice(0, 3)) {
+      if (seen.has(id)) continue;
+      const linked = lookup.get(id);
+      if (!linked) continue;
+      seen.add(id);
+      const scored = scoreMemory(linked, queryTokens, now, config, queryEmbedding);
+      additions.push({
+        ...scored,
+        score: scored.score * 0.5
+      });
+    }
+  }
+  if (additions.length === 0) return base;
+  return [...base, ...additions]
+    .sort((a, b) => b.score - a.score)
+    .slice(0, Math.max(0, k + Math.min(additions.length, k)));
+}
+
+export function topLinkCandidates(
+  candidate: { task: string; content: string; embedding?: number[] },
+  pool: MemoryItem[],
+  limit: number,
+  excludeId?: string
+): string[] {
+  const candidateTokens = tokenSet(`${candidate.task} ${candidate.content}`);
+  const scored = pool
+    .filter((item) => item.id !== excludeId)
+    .map((item) => {
+      const itemTokens = tokenSet(`${item.task} ${item.content}`);
+      const relevance = relevanceScore(itemTokens, candidateTokens, item.embedding, candidate.embedding);
+      return { id: item.id, score: relevance };
+    })
+    .filter((entry) => entry.score > 0.05)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, Math.max(0, limit));
+  return scored.map((entry) => entry.id);
 }
 
 export function cosineSimilarity(a: number[] | undefined, b: number[] | undefined): number {

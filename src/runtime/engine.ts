@@ -6,25 +6,34 @@ import {
   loadInsights,
   loadInstalledSkills,
   loadMemory,
+  loadPlaybooks,
   loadRuns,
   loadSoulProfile,
   saveInsights,
   saveMemoryItems,
+  savePlaybooks,
   saveSoulProfile,
   touchMemory,
-  updateMemoryEmbedding
+  updateMemoryEmbedding,
+  updateMemoryImportance,
+  updateMemoryLinks
 } from './storage.js';
 import { buildRetryFeedback, evaluateOutcome, summarizeReflection } from './reflection.js';
-import { invokeEmbedding, invokeModel } from './model.js';
+import { invokeModel } from './model.js';
+import { embedWithCache, enqueueEmbeddingJob } from './embedding-cache.js';
 import { executeSkill } from './skill-runner.js';
 import { defaultWorkflow } from './workflow.js';
-import { consolidateMemory, retrieveMemories } from './memory.js';
+import { consolidateMemory, retrieveMemories, topLinkCandidates } from './memory.js';
 import { deriveCandidateInsights, reconcileInsights, selectApplicableInsights } from './insights.js';
 import { applyRunToSoul, recordEvolution, refreshIdentity } from './soul.js';
 import { checkRunOutcome } from './checker.js';
+import { scoreImportanceWithModel } from './importance-scorer.js';
+import { deriveCandidatePlaybooks, reconcilePlaybooks, selectPlaybook } from './playbooks.js';
 import type {
   CheckerVerdict,
   Insight,
+  MemoryItem,
+  Playbook,
   ReflectionResult,
   RunRecord,
   RuntimeConfig,
@@ -33,6 +42,7 @@ import type {
 
 const MEMORY_TOP_K = 5;
 const INSIGHT_TOP_K = 3;
+const LINK_FANOUT = 3;
 
 function fileApplicable(task: string): boolean {
   return /\b(file|folder|directory|workspace)\b/i.test(task);
@@ -85,11 +95,26 @@ function summarizeInsights(insights: Insight[]): string {
   return insights.map((insight) => `- (s=${insight.support} c=${insight.confidence.toFixed(2)}) ${insight.content}`).join('\n');
 }
 
+function summarizePlaybook(playbook: Playbook | null): string {
+  if (!playbook) return 'No matching playbook.';
+  return `Playbook "${playbook.title}" (s=${playbook.support}, success=${(playbook.successRate * 100).toFixed(0)}%)\n${playbook.prompt}`;
+}
+
 async function executeAttempt(
   task: string,
   attemptNumber: number,
   retryFeedback: string | null,
-  baseContext: { systemPrompt: string; outputStyle: string; agentName: string; agentGoal: string; usedSkills: string[]; memorySummary: string; insightSummary: string; soulSummary: string }
+  baseContext: {
+    systemPrompt: string;
+    outputStyle: string;
+    agentName: string;
+    agentGoal: string;
+    usedSkills: string[];
+    memorySummary: string;
+    insightSummary: string;
+    soulSummary: string;
+    playbookSummary: string;
+  }
 ): Promise<{ output: string; skillOutputs: string[] }> {
   const userMessage = [
     `Task: ${task}`,
@@ -98,6 +123,7 @@ async function executeAttempt(
     `Available skills: ${baseContext.usedSkills.join(', ') || 'none'}`,
     `Workflow: ${defaultWorkflow.map((step) => `${step.name}: ${step.description}`).join(' | ')}`,
     `Soul: ${baseContext.soulSummary}`,
+    `Playbook:\n${baseContext.playbookSummary}`,
     `Recalled memory:\n${baseContext.memorySummary}`,
     `Active insights:\n${baseContext.insightSummary}`
   ].filter(Boolean).join('\n');
@@ -125,6 +151,7 @@ async function executeAttempt(
     retryFeedback ? `Retry guidance: ${retryFeedback}` : '',
     `Recalled memory:\n${baseContext.memorySummary}`,
     `Active insights:\n${baseContext.insightSummary}`,
+    `Playbook:\n${baseContext.playbookSummary}`,
     baseContext.usedSkills.length > 0
       ? `Suggested execution path: use ${baseContext.usedSkills.join(', ')}.`
       : 'Suggested execution path: respond directly and request a skill only when needed.',
@@ -135,18 +162,19 @@ async function executeAttempt(
   return { output: modelResponse || fallbackOutput, skillOutputs };
 }
 
-async function maybeEvolve(profile: SoulProfile, config: RuntimeConfig): Promise<{ profile: SoulProfile; insights: Insight[]; consolidated: number }> {
+async function maybeEvolve(profile: SoulProfile, config: RuntimeConfig): Promise<{ profile: SoulProfile; insights: Insight[]; consolidated: number; playbookCount: number }> {
   const cadence = Math.max(1, config.evolution.insightCadence);
   if (profile.runs === 0 || profile.runs % cadence !== 0) {
-    const insights = await loadInsights();
-    return { profile, insights, consolidated: 0 };
+    const [insights, playbooks] = await Promise.all([loadInsights(), loadPlaybooks()]);
+    return { profile, insights, consolidated: 0, playbookCount: playbooks.length };
   }
   const runs = await loadRuns();
   const recent = runs.slice(0, Math.max(cadence * 2, 6));
   const candidates = deriveCandidateInsights(recent);
   const existing = await loadInsights();
-  const { next } = reconcileInsights(existing, candidates);
-  await saveInsights(next);
+  const { next: nextInsights } = reconcileInsights(existing, candidates);
+  await saveInsights(nextInsights);
+
   let consolidated = 0;
   if (config.evolution.consolidateOnEvolve) {
     const memory = await loadMemory();
@@ -156,24 +184,73 @@ async function maybeEvolve(profile: SoulProfile, config: RuntimeConfig): Promise
       consolidated = result.merged;
     }
   }
+
+  let playbookCount = (await loadPlaybooks()).length;
+  if (config.evolution.synthesizePlaybooks) {
+    const allRuns = await loadRuns();
+    const candidatePlaybooks = deriveCandidatePlaybooks(allRuns.slice(0, 60));
+    if (candidatePlaybooks.length > 0) {
+      const existingPlaybooks = await loadPlaybooks();
+      const nextPlaybooks = reconcilePlaybooks(existingPlaybooks, candidatePlaybooks);
+      await savePlaybooks(nextPlaybooks);
+      playbookCount = nextPlaybooks.length;
+    }
+  }
+
   const evolved = recordEvolution(profile);
-  return { profile: evolved, insights: next, consolidated };
+  return { profile: evolved, insights: nextInsights, consolidated, playbookCount };
+}
+
+async function refreshImportanceInBackground(memory: MemoryItem, content: string, task: string, kind: string): Promise<void> {
+  const score = await scoreImportanceWithModel(content, task, kind);
+  if (typeof score === 'number') {
+    await updateMemoryImportance(memory.id, score);
+  }
+}
+
+async function embedAndLinkInBackground(memory: MemoryItem, config: RuntimeConfig): Promise<void> {
+  const text = `${memory.task}\n${memory.content}`;
+  const embedding = await embedWithCache(text);
+  if (embedding) {
+    await updateMemoryEmbedding(memory.id, embedding);
+    memory.embedding = embedding;
+  }
+  if (config.evolution.linkMemoriesOnWrite) {
+    const pool = await loadMemory();
+    const peers = topLinkCandidates(memory, pool, LINK_FANOUT, memory.id);
+    await updateMemoryLinks(memory.id, peers);
+  }
 }
 
 export async function runTask(task: string): Promise<RunRecord> {
-  const [agent, installedSkills, memory, config, insights, profileRaw] = await Promise.all([
+  const [agent, installedSkills, memory, config, insights, profileRaw, playbooks] = await Promise.all([
     loadAgent(),
     loadInstalledSkills(),
     loadMemory(),
     loadConfig(),
     loadInsights(),
-    loadSoulProfile()
+    loadSoulProfile(),
+    loadPlaybooks()
   ]);
 
   const usedSkills = chooseSkills(task, installedSkills, agent.preferredSkills);
-  const queryEmbedding = config.evolution.useEmbeddings ? (await invokeEmbedding(task)) ?? undefined : undefined;
+  const queryEmbedding = config.evolution.useEmbeddings ? (await embedWithCache(task)) ?? undefined : undefined;
   const retrieved = retrieveMemories(memory, task, MEMORY_TOP_K, config, new Date(), queryEmbedding);
   const applicableInsights = selectApplicableInsights(insights, task, INSIGHT_TOP_K);
+  const matchedPlaybook = selectPlaybook(playbooks, task);
+  if (matchedPlaybook) {
+    for (const skillId of matchedPlaybook.suggestedSkills) {
+      if (installedSkills.includes(skillId) && !usedSkills.includes(skillId)) {
+        const applicability: Record<string, (task: string) => boolean> = {
+          'file-browser': fileApplicable,
+          'web-fetch': webApplicable,
+          'shell-command': shellApplicable
+        };
+        const check = applicability[skillId];
+        if (!check || check(task)) usedSkills.push(skillId);
+      }
+    }
+  }
 
   const baseContext = {
     systemPrompt: agent.systemPrompt,
@@ -183,7 +260,8 @@ export async function runTask(task: string): Promise<RunRecord> {
     usedSkills,
     memorySummary: summarizeRetrievedMemory(retrieved),
     insightSummary: summarizeInsights(applicableInsights),
-    soulSummary: profileRaw.identity || `runs=${profileRaw.runs} success=${(profileRaw.successRate * 100).toFixed(1)}%`
+    soulSummary: profileRaw.identity || `runs=${profileRaw.runs} success=${(profileRaw.successRate * 100).toFixed(1)}%`,
+    playbookSummary: summarizePlaybook(matchedPlaybook)
   };
 
   let attempt = 1;
@@ -247,12 +325,15 @@ export async function runTask(task: string): Promise<RunRecord> {
     importance: reflectionDetail.importance
   });
 
-  if (config.evolution.useEmbeddings) {
-    const targets = [resultMemory, lessonMemory, reflectionMemory];
-    for (const target of targets) {
-      const embedding = await invokeEmbedding(`${target.task}\n${target.content}`);
-      if (embedding) await updateMemoryEmbedding(target.id, embedding);
+  const newMemories = [resultMemory, reflectionMemory, lessonMemory];
+  if (config.evolution.useEmbeddings || config.evolution.linkMemoriesOnWrite) {
+    for (const target of newMemories) {
+      enqueueEmbeddingJob(() => embedAndLinkInBackground(target, config));
     }
+  }
+  if (config.evolution.useLlmImportance) {
+    enqueueEmbeddingJob(() => refreshImportanceInBackground(lessonMemory, lessonMemory.content, lessonMemory.task, lessonMemory.kind));
+    enqueueEmbeddingJob(() => refreshImportanceInBackground(resultMemory, resultMemory.content, resultMemory.task, resultMemory.kind));
   }
 
   let updatedProfile = applyRunToSoul(profileRaw, storedRun);

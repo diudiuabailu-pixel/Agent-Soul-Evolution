@@ -33,7 +33,24 @@ export type RuntimeConfig = {
     useEmbeddings: boolean;
     useCheckerModel: boolean;
     consolidateOnEvolve: boolean;
+    useLlmImportance: boolean;
+    linkMemoriesOnWrite: boolean;
+    oneHopExpansion: boolean;
+    synthesizePlaybooks: boolean;
   };
+};
+
+export type Playbook = {
+  id: string;
+  title: string;
+  trigger: string;
+  prompt: string;
+  suggestedSkills: string[];
+  support: number;
+  successRate: number;
+  createdAt: string;
+  updatedAt: string;
+  origins: string[];
 };
 
 export type MemoryKind = 'result' | 'reflection' | 'lesson' | 'insight';
@@ -49,6 +66,7 @@ export type MemoryItem = {
   accessCount: number;
   lastAccessedAt: string;
   embedding?: number[];
+  links?: string[];
 };
 
 export type ReflectionResult = {

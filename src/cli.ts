@@ -7,11 +7,13 @@ import {
   loadInsights,
   loadInstalledSkills,
   loadMemory,
+  loadPlaybooks,
   loadRuns,
   loadSoulProfile,
   loadAgent,
   saveConfig,
   saveInsights,
+  savePlaybooks,
   saveSoulProfile
 } from './runtime/storage.js';
 import { getSkillManifest } from './skills/catalog.js';
@@ -21,6 +23,7 @@ import { listOllamaModels } from './runtime/ollama.js';
 import { createServer } from './server.js';
 import { runTask } from './runtime/engine.js';
 import { deriveCandidateInsights, reconcileInsights } from './runtime/insights.js';
+import { deriveCandidatePlaybooks, reconcilePlaybooks } from './runtime/playbooks.js';
 import { recordEvolution, refreshIdentity, summarizeSoul } from './runtime/soul.js';
 import { consolidateMemory } from './runtime/memory.js';
 
@@ -187,6 +190,32 @@ program.command('soul').description('Show the current soul profile and top insig
     for (const insight of insights.slice(0, 5)) {
       console.log(`- (s=${insight.support} c=${insight.confidence.toFixed(2)}) ${insight.content}`);
     }
+  }
+});
+
+program.command('playbooks:list').description('Print synthesized playbooks').action(async () => {
+  const playbooks = await loadPlaybooks();
+  if (playbooks.length === 0) {
+    console.log('No playbooks synthesized yet.');
+    return;
+  }
+  for (const entry of playbooks) {
+    console.log(`${entry.id} support=${entry.support} success=${(entry.successRate * 100).toFixed(0)}%`);
+    console.log(`  ${entry.title}`);
+    console.log(`  trigger: ${entry.trigger || '(none)'}`);
+    console.log(`  skills: ${entry.suggestedSkills.join(', ') || 'none'}`);
+  }
+});
+
+program.command('playbooks:synthesize').description('Run a playbook synthesis cycle over recent runs').action(async () => {
+  const [runs, existing] = await Promise.all([loadRuns(), loadPlaybooks()]);
+  const candidates = deriveCandidatePlaybooks(runs.slice(0, 60));
+  const next = reconcilePlaybooks(existing, candidates);
+  await savePlaybooks(next);
+  const delta = next.length - existing.length;
+  console.log(`Playbooks: now ${next.length} stored (${delta >= 0 ? '+' : ''}${delta} from this cycle).`);
+  for (const playbook of next.slice(0, 5)) {
+    console.log(`- ${playbook.title} (s=${playbook.support}, success=${(playbook.successRate * 100).toFixed(0)}%)`);
   }
 });
 

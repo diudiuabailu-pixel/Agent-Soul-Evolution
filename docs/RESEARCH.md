@@ -69,6 +69,46 @@ configured endpoint's `/embeddings` route. If the endpoint does not implement
 embeddings, the fallback is graceful — relevance silently reverts to token
 Jaccard.
 
+## Embedding cache and async queue
+
+`src/runtime/embedding-cache.ts` keeps an on-disk cache keyed by SHA-256 of
+the source text. Two callers benefit: query embedding during retrieval (kept
+hot for repeated tasks) and per-memory embeddings written after each run.
+Persistence is debounced through a 200 ms timer so that a burst of writes
+costs a single fs flush. Background work for embedding and importance
+re-scoring is dispatched onto a fire-and-forget queue so `runTask` never
+blocks on the model endpoint after producing the user-visible output.
+
+## A-Mem networked memory
+
+`MemoryItem.links: string[]` follows the agentic memory graph in Xu et al.
+2025. `topLinkCandidates` finds the k most relevant peers at write time and
+`updateMemoryLinks` writes the edges bidirectionally. When
+`config.evolution.oneHopExpansion` is on, retrieval pulls top-k base
+memories and walks one hop along each item's links, scoring expanded peers
+at half weight. This keeps the active context tight while still letting
+indirectly relevant memories surface when the direct match is weak.
+
+## LLM-graded importance
+
+`src/runtime/importance-scorer.ts` mirrors the original Park et al. 2023
+prompt: rate the memory on a 1–10 integer scale. The scorer runs in the
+background queue and overwrites the heuristic score when it returns. If the
+endpoint is unreachable or the response cannot be parsed, the heuristic
+remains in place — the runtime stays correct without the model.
+
+## Voyager-style playbooks
+
+`src/runtime/playbooks.ts` implements a prompt-level analogue of the Voyager
+skill library (Wang et al. 2023). When at least three similar tasks succeed,
+the runtime synthesises a `Playbook` containing the trigger keywords, the
+suggested skill order, the historical success rate, and a short prompt
+template. On a new task, `selectPlaybook` chooses the best match (Jaccard
+trigger overlap × 0.7 + success rate × 0.3) and the engine prepends the
+playbook to the prompt while seeding the suggested skills. This is the safe
+local analogue of executable skill synthesis: the agent learns *playbooks*,
+not arbitrary code.
+
 ## Outcome verification (SAGE Checker)
 
 `config.evolution.useCheckerModel` activates a second-pass verifier inspired

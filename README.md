@@ -58,6 +58,8 @@ node dist/cli.js ollama:list
 node dist/cli.js eval
 node dist/cli.js soul
 node dist/cli.js soul:evolve
+node dist/cli.js playbooks:list
+node dist/cli.js playbooks:synthesize
 node dist/cli.js config:set-model --base-url http://localhost:11434/v1 --model qwen2.5:7b
 ```
 
@@ -126,7 +128,18 @@ evolution:
   useEmbeddings: false
   useCheckerModel: false
   consolidateOnEvolve: true
+  useLlmImportance: false
+  linkMemoriesOnWrite: true
+  oneHopExpansion: true
+  synthesizePlaybooks: true
 ```
+
+`linkMemoriesOnWrite` builds an A-Mem-style memory graph. `oneHopExpansion`
+walks a single hop from each top-k retrieval to surface indirectly relevant
+context. `synthesizePlaybooks` clusters successful trajectories into reusable
+prompt templates that get injected on similar future tasks. `useLlmImportance`
+swaps the heuristic 1–10 score for the original Park et al. prompt and keeps
+the heuristic as a fallback when the model is offline.
 
 When `useEmbeddings` is on, the runtime calls the configured endpoint's
 `/embeddings` route to score relevance with cosine similarity (Park et al.
@@ -153,6 +166,7 @@ The built-in web console shows:
 - Reflections produced by the runtime
 - Soul identity, success rate, and evolution generations
 - Top consolidated insights and a manual evolve trigger
+- Synthesized playbooks (trigger, support, success rate, suggested skills)
 
 ## Installing a custom skill package
 

@@ -7,6 +7,7 @@ import {
   insightsPath,
   installedSkillsPath,
   memoryPath,
+  playbooksPath,
   runsPath,
   runtimeRoot,
   skillPackagesRoot,
@@ -19,6 +20,7 @@ import type {
   AgentProfile,
   Insight,
   MemoryItem,
+  Playbook,
   RunRecord,
   RuntimeConfig,
   SoulProfile
@@ -49,7 +51,11 @@ const defaultConfig: RuntimeConfig = {
     weightRelevance: 1,
     useEmbeddings: false,
     useCheckerModel: false,
-    consolidateOnEvolve: true
+    consolidateOnEvolve: true,
+    useLlmImportance: false,
+    linkMemoriesOnWrite: true,
+    oneHopExpansion: true,
+    synthesizePlaybooks: true
   }
 };
 
@@ -95,7 +101,8 @@ function normalizeMemoryItem(raw: Partial<MemoryItem> & { content?: string; task
     importance,
     accessCount: typeof raw.accessCount === 'number' ? raw.accessCount : 0,
     lastAccessedAt: typeof raw.lastAccessedAt === 'string' ? raw.lastAccessedAt : createdAt,
-    embedding: Array.isArray(raw.embedding) ? raw.embedding : undefined
+    embedding: Array.isArray(raw.embedding) ? raw.embedding : undefined,
+    links: Array.isArray(raw.links) ? raw.links : []
   };
 }
 
@@ -129,6 +136,31 @@ export async function ensureRuntime(): Promise<void> {
   if (!(await fs.pathExists(soulProfilePath))) {
     await fs.writeJson(soulProfilePath, emptySoul(), { spaces: 2 });
   }
+  if (!(await fs.pathExists(playbooksPath))) {
+    await fs.writeJson(playbooksPath, [], { spaces: 2 });
+  }
+}
+
+export async function loadPlaybooks(): Promise<Playbook[]> {
+  await ensureRuntime();
+  const raw = (await fs.readJson(playbooksPath)) as Array<Partial<Playbook>>;
+  return raw.map((entry) => ({
+    id: entry.id ?? nanoid(),
+    title: entry.title ?? 'Untitled playbook',
+    trigger: entry.trigger ?? '',
+    prompt: entry.prompt ?? '',
+    suggestedSkills: Array.isArray(entry.suggestedSkills) ? entry.suggestedSkills : [],
+    support: typeof entry.support === 'number' ? entry.support : 1,
+    successRate: typeof entry.successRate === 'number' ? entry.successRate : 0,
+    createdAt: entry.createdAt ?? new Date().toISOString(),
+    updatedAt: entry.updatedAt ?? entry.createdAt ?? new Date().toISOString(),
+    origins: Array.isArray(entry.origins) ? entry.origins : []
+  }));
+}
+
+export async function savePlaybooks(playbooks: Playbook[]): Promise<void> {
+  await ensureRuntime();
+  await fs.writeJson(playbooksPath, playbooks, { spaces: 2 });
 }
 
 export async function loadConfig(): Promise<RuntimeConfig> {
@@ -179,6 +211,38 @@ export async function updateMemoryEmbedding(id: string, embedding: number[]): Pr
   const target = items.find((item) => item.id === id);
   if (!target) return;
   target.embedding = embedding;
+  await fs.writeJson(memoryPath, items, { spaces: 2 });
+}
+
+export async function updateMemoryImportance(id: string, importance: number): Promise<void> {
+  const items = await loadMemory();
+  const target = items.find((item) => item.id === id);
+  if (!target) return;
+  target.importance = Math.max(1, Math.min(10, Math.round(importance)));
+  await fs.writeJson(memoryPath, items, { spaces: 2 });
+}
+
+export async function updateMemoryLinks(id: string, peerIds: string[]): Promise<void> {
+  if (peerIds.length === 0) return;
+  const items = await loadMemory();
+  const map = new Map(items.map((item) => [item.id, item]));
+  const target = map.get(id);
+  if (!target) return;
+  const set = new Set(target.links || []);
+  for (const peer of peerIds) {
+    if (peer === id) continue;
+    if (!map.has(peer)) continue;
+    set.add(peer);
+  }
+  target.links = Array.from(set).slice(0, 8);
+  for (const peer of peerIds) {
+    if (peer === id) continue;
+    const peerItem = map.get(peer);
+    if (!peerItem) continue;
+    const peerSet = new Set(peerItem.links || []);
+    peerSet.add(id);
+    peerItem.links = Array.from(peerSet).slice(0, 8);
+  }
   await fs.writeJson(memoryPath, items, { spaces: 2 });
 }
 

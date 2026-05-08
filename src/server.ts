@@ -9,8 +9,10 @@ import {
   loadInstalledSkills,
   loadConfig,
   loadAgent,
+  loadPlaybooks,
   saveAgent,
   saveConfig,
+  savePlaybooks,
   installSkill,
   loadInsights,
   loadSoulProfile,
@@ -24,6 +26,7 @@ import { listOllamaModels } from './runtime/ollama.js';
 import { getRunById } from './runtime/run-details.js';
 import { defaultWorkflow } from './runtime/workflow.js';
 import { deriveCandidateInsights, reconcileInsights } from './runtime/insights.js';
+import { deriveCandidatePlaybooks, reconcilePlaybooks } from './runtime/playbooks.js';
 import { recordEvolution, refreshIdentity } from './runtime/soul.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -40,7 +43,7 @@ export async function createServer() {
   app.use(express.static(webRoot));
 
   app.get('/api/state', async (_req, res) => {
-    const [memory, runs, installedSkills, agent, currentConfig, allSkills, insights, soul] = await Promise.all([
+    const [memory, runs, installedSkills, agent, currentConfig, allSkills, insights, soul, playbooks] = await Promise.all([
       loadMemory(),
       loadRuns(),
       loadInstalledSkills(),
@@ -48,7 +51,8 @@ export async function createServer() {
       loadConfig(),
       loadAllSkillManifests(),
       loadInsights(),
-      loadSoulProfile()
+      loadSoulProfile(),
+      loadPlaybooks()
     ]);
 
     const skills = installedSkills
@@ -64,7 +68,8 @@ export async function createServer() {
       workflow: defaultWorkflow,
       availableSkills: allSkills,
       insights,
-      soul
+      soul,
+      playbooks
     });
   });
 
@@ -152,6 +157,19 @@ export async function createServer() {
   app.get('/api/soul', async (_req, res) => {
     const [soul, insights] = await Promise.all([loadSoulProfile(), loadInsights()]);
     res.json({ soul, insights });
+  });
+
+  app.get('/api/playbooks', async (_req, res) => {
+    const playbooks = await loadPlaybooks();
+    res.json({ playbooks });
+  });
+
+  app.post('/api/playbooks/synthesize', async (_req, res) => {
+    const [runs, existing] = await Promise.all([loadRuns(), loadPlaybooks()]);
+    const candidates = deriveCandidatePlaybooks(runs.slice(0, 60));
+    const next = reconcilePlaybooks(existing, candidates);
+    await savePlaybooks(next);
+    res.json({ playbooks: next, added: next.length - existing.length });
   });
 
   app.post('/api/soul/evolve', async (_req, res) => {
