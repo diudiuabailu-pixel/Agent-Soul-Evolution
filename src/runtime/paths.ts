@@ -1,15 +1,53 @@
 import path from 'node:path';
 
-export const projectRoot = process.cwd();
-export const runtimeRoot = path.join(projectRoot, '.runtime');
-export const configPath = path.join(runtimeRoot, 'config.yaml');
-export const memoryPath = path.join(runtimeRoot, 'memory', 'items.json');
-export const runsPath = path.join(runtimeRoot, 'runs', 'items.json');
-export const agentsPath = path.join(runtimeRoot, 'agents', 'default.json');
-export const installedSkillsPath = path.join(runtimeRoot, 'skills', 'installed.json');
-export const skillPackagesRoot = path.join(runtimeRoot, 'skills', 'packages');
-export const soulRoot = path.join(runtimeRoot, 'soul');
-export const insightsPath = path.join(soulRoot, 'insights.json');
-export const soulProfilePath = path.join(soulRoot, 'profile.json');
-export const embeddingsCachePath = path.join(runtimeRoot, 'memory', 'embeddings.json');
-export const playbooksPath = path.join(soulRoot, 'playbooks.json');
+export function projectRoot(): string {
+  return process.cwd();
+}
+
+export function runtimeRoot(): string {
+  return path.join(projectRoot(), '.runtime');
+}
+
+export function configPath(): string {
+  return path.join(runtimeRoot(), 'config.yaml');
+}
+
+export function memoryPath(): string {
+  return path.join(runtimeRoot(), 'memory', 'items.json');
+}
+
+export function runsPath(): string {
+  return path.join(runtimeRoot(), 'runs', 'items.json');
+}
+
+export function agentsPath(): string {
+  return path.join(runtimeRoot(), 'agents', 'default.json');
+}
+
+export function installedSkillsPath(): string {
+  return path.join(runtimeRoot(), 'skills', 'installed.json');
+}
+
+export function skillPackagesRoot(): string {
+  return path.join(runtimeRoot(), 'skills', 'packages');
+}
+
+export function soulRoot(): string {
+  return path.join(runtimeRoot(), 'soul');
+}
+
+export function insightsPath(): string {
+  return path.join(soulRoot(), 'insights.json');
+}
+
+export function soulProfilePath(): string {
+  return path.join(soulRoot(), 'profile.json');
+}
+
+export function embeddingsCachePath(): string {
+  return path.join(runtimeRoot(), 'memory', 'embeddings.json');
+}
+
+export function playbooksPath(): string {
+  return path.join(soulRoot(), 'playbooks.json');
+}

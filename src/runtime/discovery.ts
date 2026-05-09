@@ -4,19 +4,22 @@ import { skillCatalog } from '../skills/catalog.js';
 import type { SkillManifest } from '../types.js';
 import { runtimeRoot } from './paths.js';
 
-const externalSkillsRoot = path.join(runtimeRoot, 'skills', 'packages');
+function externalSkillsRoot(): string {
+  return path.join(runtimeRoot(), 'skills', 'packages');
+}
 
 export async function ensureExternalSkillsRoot(): Promise<void> {
-  await fs.ensureDir(externalSkillsRoot);
+  await fs.ensureDir(externalSkillsRoot());
 }
 
 export async function loadExternalSkillManifests(): Promise<SkillManifest[]> {
   await ensureExternalSkillsRoot();
-  const entries = await fs.readdir(externalSkillsRoot);
+  const root = externalSkillsRoot();
+  const entries = await fs.readdir(root);
   const manifests: SkillManifest[] = [];
 
   for (const entry of entries) {
-    const manifestPath = path.join(externalSkillsRoot, entry, 'skill.json');
+    const manifestPath = path.join(root, entry, 'skill.json');
     if (await fs.pathExists(manifestPath)) {
       const manifest = await fs.readJson(manifestPath) as SkillManifest;
       manifests.push(manifest);
@@ -39,7 +42,7 @@ export async function installSkillPackage(sourceDir: string): Promise<SkillManif
   }
 
   const manifest = await fs.readJson(manifestPath) as SkillManifest;
-  const targetDir = path.join(externalSkillsRoot, manifest.id);
+  const targetDir = path.join(externalSkillsRoot(), manifest.id);
   await fs.remove(targetDir);
   await fs.copy(sourceDir, targetDir);
   return manifest;

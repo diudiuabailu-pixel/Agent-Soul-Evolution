@@ -84,6 +84,21 @@ export type CheckerVerdict = {
   source: 'heuristic' | 'model';
 };
 
+export type TrajectoryStep = {
+  attempt: number;
+  action: string;
+  input?: string;
+  observation: string;
+  signal: 'success' | 'failure' | 'partial';
+  durationMs?: number;
+};
+
+export type AppliedMemoryOp = {
+  kind: 'store' | 'boost' | 'discard' | 'merge' | 'retrieve';
+  detail: string;
+  affectedIds: string[];
+};
+
 export type RunRecord = {
   id: string;
   task: string;
@@ -98,6 +113,9 @@ export type RunRecord = {
   retrievedMemoryIds?: string[];
   appliedInsightIds?: string[];
   checkerVerdict?: CheckerVerdict;
+  steps?: TrajectoryStep[];
+  memoryOps?: AppliedMemoryOp[];
+  firstAttemptSucceeded?: boolean;
 };
 
 export type AgentProfile = {
@@ -130,4 +148,8 @@ export type SoulProfile = {
   skillStats: Record<string, { used: number; succeeded: number }>;
   lastEvolvedAt: string | null;
   updatedAt: string;
+  firstAttemptSuccesses: number;
+  retryAttempts: number;
+  retrySuccesses: number;
+  retryUplift: number;
 };

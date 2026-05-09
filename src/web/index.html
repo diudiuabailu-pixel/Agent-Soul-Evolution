@@ -147,6 +147,9 @@
       state = await res.json();
 
       const successPct = state.soul && state.soul.runs > 0 ? `${(state.soul.successRate * 100).toFixed(0)}%` : '—';
+      const retryUplift = state.soul && state.soul.retryAttempts > 0
+        ? `${(state.soul.retryUplift * 100).toFixed(0)}%`
+        : 'n/a';
       document.getElementById('summary').innerHTML = [
         ['Runtime', 'Ready'],
         ['Skills', String(state.skills.length)],
@@ -154,6 +157,7 @@
         ['Memory Items', String(state.memory.length)],
         ['Insights', String((state.insights || []).length)],
         ['Success Rate', successPct],
+        ['Retry Uplift', retryUplift],
         ['Generations', String(state.soul ? state.soul.generations : 0)]
       ].map(([label, value]) => `
         <div class="card">
@@ -198,9 +202,19 @@
           const checker = run.checkerVerdict
             ? `Checker: ${run.checkerVerdict.satisfied ? 'satisfied' : 'rejected'} (${run.checkerVerdict.source}, conf=${run.checkerVerdict.confidence.toFixed(2)})\nReason: ${run.checkerVerdict.reason}`
             : 'Checker: not run';
+          const trajectory = (run.steps || []).map(step =>
+            `[#${step.attempt} ${step.action} ${step.signal}${step.durationMs ? ` ${step.durationMs}ms` : ''}] ${(step.observation || '').slice(0, 220)}`
+          ).join('\n') || '(no captured steps)';
+          const memoryOps = (run.memoryOps || []).map(op =>
+            `- ${op.kind}: ${op.detail}`
+          ).join('\n') || '(no agent memory ops)';
+          const firstAttemptSummary = typeof run.firstAttemptSucceeded === 'boolean'
+            ? `First-attempt success: ${run.firstAttemptSucceeded ? 'yes' : 'no'}`
+            : 'First-attempt success: unknown';
           document.getElementById('runDetailOutput').textContent = [
             `Status: ${run.status} | Attempts: ${run.attempts || 1}`,
             `Skills: ${run.usedSkills.join(', ') || 'none'}`,
+            firstAttemptSummary,
             checker,
             '',
             'Output:',
@@ -208,6 +222,12 @@
             '',
             'Reflection:',
             run.reflection,
+            '',
+            'Trajectory:',
+            trajectory,
+            '',
+            'Memory ops:',
+            memoryOps,
             '',
             'Recalled memory:',
             recalled,

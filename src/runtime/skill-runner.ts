@@ -13,7 +13,7 @@ export type SkillExecution = {
 };
 
 async function runFileBrowser(task: string): Promise<SkillExecution> {
-  const names = await fs.readdir(projectRoot);
+  const names = await fs.readdir(projectRoot());
   const visible = names.filter((name) => !name.startsWith('.')).slice(0, 24);
   return {
     skillId: 'file-browser',
@@ -70,7 +70,7 @@ async function runShellCommand(task: string): Promise<SkillExecution> {
     };
   }
 
-  const { stdout, stderr } = await execFileAsync(command, args, { cwd: projectRoot, timeout: 10000 });
+  const { stdout, stderr } = await execFileAsync(command, args, { cwd: projectRoot(), timeout: 10000 });
   return {
     skillId: 'shell-command',
     summary: `Executed ${raw}`,

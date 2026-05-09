@@ -152,7 +152,40 @@ program.command('runs:list')
       console.log(`${run.id} ${run.status} attempts=${run.attempts} ${run.createdAt}`);
       console.log(`  task: ${run.task.slice(0, 120)}`);
       console.log(`  skills: ${run.usedSkills.join(', ') || 'none'}`);
+      if (run.steps && run.steps.length > 0) console.log(`  steps: ${run.steps.length}`);
+      if (run.memoryOps && run.memoryOps.length > 0) console.log(`  memoryOps: ${run.memoryOps.map((op) => op.kind).join(', ')}`);
     }
+  });
+
+program.command('run:show')
+  .description('Show full detail (trajectory + memory ops) for a run id')
+  .argument('<id>')
+  .action(async (id: string) => {
+    const runs = await loadRuns();
+    const run = runs.find((entry) => entry.id === id);
+    if (!run) {
+      console.error(`No run with id ${id}`);
+      process.exit(1);
+    }
+    console.log(`${run.id} ${run.status} attempts=${run.attempts}`);
+    console.log(`task: ${run.task}`);
+    console.log(`skills: ${run.usedSkills.join(', ') || 'none'}`);
+    if (run.checkerVerdict) {
+      console.log(`checker: ${run.checkerVerdict.satisfied ? 'satisfied' : 'rejected'} (${run.checkerVerdict.source}, conf=${run.checkerVerdict.confidence.toFixed(2)})`);
+    }
+    console.log('---trajectory---');
+    for (const step of run.steps || []) {
+      console.log(`#${step.attempt} ${step.action} [${step.signal}]${step.durationMs ? ` ${step.durationMs}ms` : ''}`);
+      console.log(`  ${(step.observation || '').slice(0, 200)}`);
+    }
+    if (run.memoryOps && run.memoryOps.length > 0) {
+      console.log('---memory ops---');
+      for (const op of run.memoryOps) console.log(`${op.kind}: ${op.detail}`);
+    }
+    console.log('---output---');
+    console.log(run.output);
+    console.log('---reflection---');
+    console.log(run.reflection);
   });
 
 program.command('memory:consolidate')

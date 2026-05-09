@@ -69,6 +69,42 @@ configured endpoint's `/embeddings` route. If the endpoint does not implement
 embeddings, the fallback is graceful — relevance silently reverts to token
 Jaccard.
 
+## Memory-as-Tools (AgeMem 2026)
+
+`src/runtime/memory-tools.ts` exposes the five core memory operations from
+Xu et al. 2026 ("Agentic Memory: Learning Unified Long-Term and Short-Term
+Memory Management for Large Language Model Agents", arXiv:2601.01885) as
+markers the agent can emit inside its response: `<memory:store>`,
+`<memory:retrieve>`, `<memory:boost>`, `<memory:discard>`, `<memory:merge>`.
+The engine parses these markers after the response is produced, applies
+them to storage (under a per-file lock so concurrent writes do not corrupt
+the JSON), strips them from the user-visible output, and persists the
+applied operations on the run record.
+
+This is the inference-only analogue of the GRPO-trained AgeMem policy —
+the runtime does not learn the policy, but the agent now has direct
+authority over the memory store rather than only the engine's heuristics.
+
+## Trajectory-informed memory (arXiv:2603.10600, 2026)
+
+`RunRecord.steps: TrajectoryStep[]` captures every attempt's component
+moves: model invocation, each skill call, and the post-hoc memory tool
+phase. Each step records `{ attempt, action, signal, durationMs,
+observation }`. This implements the actionable-trajectory storage from
+Trajectory-Informed Memory Generation (2026), letting future analysis
+distinguish "task succeeded but a sub-step failed" from "task failed".
+The web console run-detail panel and the new `ase run:show <id>` command
+render the full trajectory.
+
+## Retry uplift (SCoRe sanity check)
+
+Recent work flags that LLM self-correction is "largely ineffective" in
+modern models. To verify we are not in that regime, `SoulProfile` now
+tracks `firstAttemptSuccesses`, `retryAttempts`, `retrySuccesses`, and a
+derived `retryUplift = retrySuccesses / retryAttempts`. The retry loop is
+worth keeping if uplift stays above the cost of an extra inference;
+otherwise it should be disabled in `config.evolution.retryOnFailure`.
+
 ## Embedding cache and async queue
 
 `src/runtime/embedding-cache.ts` keeps an on-disk cache keyed by SHA-256 of

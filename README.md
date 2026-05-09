@@ -48,6 +48,7 @@ node dist/cli.js init
 node dist/cli.js start
 node dist/cli.js doctor
 node dist/cli.js run "List the files in this workspace"
+node dist/cli.js run:show <run-id>
 node dist/cli.js memory:list -n 10
 node dist/cli.js runs:list -n 10
 node dist/cli.js memory:consolidate
@@ -164,9 +165,11 @@ The built-in web console shows:
 - Ollama discovery
 - Evaluation trigger and result summary
 - Reflections produced by the runtime
-- Soul identity, success rate, and evolution generations
+- Soul identity, success rate, retry uplift, and evolution generations
 - Top consolidated insights and a manual evolve trigger
 - Synthesized playbooks (trigger, support, success rate, suggested skills)
+- Per-run trajectory view: every model and skill step with signal + duration
+- Memory operations the agent invoked via `<memory:store|retrieve|boost|discard|merge>` markers
 
 ## Installing a custom skill package
 

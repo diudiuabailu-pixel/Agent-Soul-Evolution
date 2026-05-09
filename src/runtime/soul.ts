@@ -9,7 +9,11 @@ const EMPTY_SOUL: SoulProfile = {
   identity: '',
   skillStats: {},
   lastEvolvedAt: null,
-  updatedAt: new Date(0).toISOString()
+  updatedAt: new Date(0).toISOString(),
+  firstAttemptSuccesses: 0,
+  retryAttempts: 0,
+  retrySuccesses: 0,
+  retryUplift: 0
 };
 
 function clone(profile: SoulProfile): SoulProfile {
@@ -61,6 +65,16 @@ export function applyRunToSoul(profile: SoulProfile, run: RunRecord): SoulProfil
   else next.failures += 1;
   next.successRate = next.runs > 0 ? next.successes / next.runs : 0;
 
+  const attempts = typeof run.attempts === 'number' ? run.attempts : 1;
+  const firstAttempt = run.firstAttemptSucceeded ?? (attempts === 1 && success);
+  if (firstAttempt) {
+    next.firstAttemptSuccesses += 1;
+  } else if (attempts > 1) {
+    next.retryAttempts += 1;
+    if (success) next.retrySuccesses += 1;
+  }
+  next.retryUplift = next.retryAttempts > 0 ? next.retrySuccesses / next.retryAttempts : 0;
+
   for (const skill of run.usedSkills) {
     const entry = next.skillStats[skill] || { used: 0, succeeded: 0 };
     entry.used += 1;
@@ -89,8 +103,9 @@ export function recordEvolution(profile: SoulProfile): SoulProfile {
 
 export function summarizeSoul(profile: SoulProfile): string {
   const successPct = (profile.successRate * 100).toFixed(1);
+  const retryPct = profile.retryAttempts > 0 ? `${(profile.retryUplift * 100).toFixed(0)}%` : 'n/a';
   const top = topSkills(profile.skillStats, 3)
     .map((entry) => `${entry.id} ${entry.succeeded}/${entry.used}`)
     .join(' | ');
-  return `runs=${profile.runs} success=${successPct}% generations=${profile.generations}${top ? ` | top: ${top}` : ''}`;
+  return `runs=${profile.runs} success=${successPct}% retryUplift=${retryPct} generations=${profile.generations}${top ? ` | top: ${top}` : ''}`;
 }

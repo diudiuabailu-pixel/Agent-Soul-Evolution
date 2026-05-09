@@ -161,6 +161,88 @@ test('engine retries once on a failure signal and recovers', async () => {
   });
 });
 
+test('runTask captures trajectory steps and applies agent memory ops', async () => {
+  await withTempRuntime(async () => {
+    const responseWithOps = [
+      'Workspace entries:',
+      '- README.md',
+      '- src',
+      'Result: I will remember this for next time.',
+      '<memory:store kind="lesson" importance="9" tags="workspace">Always cite README first when summarizing the workspace.</memory:store>'
+    ].join('\n');
+    const { server, port } = await startFakeModel({ chatResponses: [responseWithOps] });
+    try {
+      const { engine, storage } = await importFresh();
+      await storage.ensureRuntime();
+      const config = await storage.loadConfig();
+      config.models.default.baseUrl = `http://127.0.0.1:${port}/v1`;
+      config.models.default.model = 'fake-model';
+      config.evolution.useEmbeddings = false;
+      config.evolution.useCheckerModel = false;
+      config.evolution.useLlmImportance = false;
+      config.evolution.linkMemoriesOnWrite = false;
+      config.evolution.synthesizePlaybooks = false;
+      await storage.saveConfig(config);
+
+      const run = await engine.runTask('List the visible workspace files');
+      assert.ok(Array.isArray(run.steps) && run.steps.length > 0, 'should capture trajectory steps');
+      assert.ok(run.steps.some((step) => step.action === 'model.invoke'), 'should record model invocation');
+      assert.ok(run.steps.some((step) => step.action.startsWith('skill.')), 'should record skill invocation');
+
+      assert.ok(Array.isArray(run.memoryOps), 'memoryOps should exist');
+      assert.equal(run.memoryOps.length, 1);
+      assert.equal(run.memoryOps[0].kind, 'store');
+
+      assert.ok(!run.output.includes('<memory:store'), 'marker should be cleaned from final output');
+
+      const memory = await storage.loadMemory();
+      const stored = memory.find((item) => item.tags.includes('agent-tool'));
+      assert.ok(stored, 'agent-stored memory should be persisted');
+      assert.equal(stored.importance, 9);
+
+      const soul = await storage.loadSoulProfile();
+      assert.equal(soul.firstAttemptSuccesses, 1);
+      assert.equal(soul.retryAttempts, 0);
+    } finally {
+      server.close();
+    }
+  });
+});
+
+test('soul tracks retry uplift after a recovered failure', async () => {
+  await withTempRuntime(async () => {
+    const { server, port } = await startFakeModel({
+      chatResponses: [
+        'No URL was present in the task, so no web content was fetched.',
+        'Workspace entries:\n- README.md\nResult: recovered on retry.'
+      ]
+    });
+    try {
+      const { engine, storage } = await importFresh();
+      await storage.ensureRuntime();
+      const config = await storage.loadConfig();
+      config.models.default.baseUrl = `http://127.0.0.1:${port}/v1`;
+      config.models.default.model = 'fake-model';
+      config.evolution.useEmbeddings = false;
+      config.evolution.useCheckerModel = false;
+      config.evolution.useLlmImportance = false;
+      config.evolution.linkMemoriesOnWrite = false;
+      config.evolution.synthesizePlaybooks = false;
+      await storage.saveConfig(config);
+
+      const run = await engine.runTask('Inspect the workspace folder layout and summarize.');
+      assert.ok(run.attempts >= 2, 'should retry once');
+      const soul = await storage.loadSoulProfile();
+      assert.equal(soul.retryAttempts, 1);
+      assert.equal(soul.retrySuccesses, 1);
+      assert.ok(Math.abs(soul.retryUplift - 1) < 1e-9);
+      assert.equal(soul.firstAttemptSuccesses, 0);
+    } finally {
+      server.close();
+    }
+  });
+});
+
 test('embedding cache short-circuits a second identical request', async () => {
   await withTempRuntime(async () => {
     const { server, port, calls } = await startFakeModel();

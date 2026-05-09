@@ -1,6 +1,7 @@
 import {
   appendMemory,
   appendRun,
+  deleteMemory,
   loadAgent,
   loadConfig,
   loadInsights,
@@ -9,6 +10,7 @@ import {
   loadPlaybooks,
   loadRuns,
   loadSoulProfile,
+  mergeMemories,
   saveInsights,
   saveMemoryItems,
   savePlaybooks,
@@ -29,7 +31,9 @@ import { applyRunToSoul, recordEvolution, refreshIdentity } from './soul.js';
 import { checkRunOutcome } from './checker.js';
 import { scoreImportanceWithModel } from './importance-scorer.js';
 import { deriveCandidatePlaybooks, reconcilePlaybooks, selectPlaybook } from './playbooks.js';
+import { memoryOpProtocolHelp, parseMemoryOps } from './memory-tools.js';
 import type {
+  AppliedMemoryOp,
   CheckerVerdict,
   Insight,
   MemoryItem,
@@ -37,7 +41,8 @@ import type {
   ReflectionResult,
   RunRecord,
   RuntimeConfig,
-  SoulProfile
+  SoulProfile,
+  TrajectoryStep
 } from '../types.js';
 
 const MEMORY_TOP_K = 5;
@@ -115,7 +120,9 @@ async function executeAttempt(
     soulSummary: string;
     playbookSummary: string;
   }
-): Promise<{ output: string; skillOutputs: string[] }> {
+): Promise<{ output: string; rawOutput: string; skillOutputs: string[]; steps: TrajectoryStep[] }> {
+  const steps: TrajectoryStep[] = [];
+
   const userMessage = [
     `Task: ${task}`,
     `Attempt: ${attemptNumber}`,
@@ -125,21 +132,54 @@ async function executeAttempt(
     `Soul: ${baseContext.soulSummary}`,
     `Playbook:\n${baseContext.playbookSummary}`,
     `Recalled memory:\n${baseContext.memorySummary}`,
-    `Active insights:\n${baseContext.insightSummary}`
+    `Active insights:\n${baseContext.insightSummary}`,
+    memoryOpProtocolHelp()
   ].filter(Boolean).join('\n');
 
+  const modelStarted = Date.now();
   const modelResponse = await invokeModel([
     { role: 'system', content: `${baseContext.systemPrompt}\nOutput style: ${baseContext.outputStyle}` },
     { role: 'user', content: userMessage }
   ]);
+  steps.push({
+    attempt: attemptNumber,
+    action: 'model.invoke',
+    input: task,
+    observation: modelResponse ? modelResponse.slice(0, 400) : '(no model response — fallback engaged)',
+    signal: modelResponse ? 'success' : 'failure',
+    durationMs: Date.now() - modelStarted
+  });
 
   const skillOutputs: string[] = [];
   for (const skillId of baseContext.usedSkills) {
+    const skillStarted = Date.now();
     try {
       const result = await executeSkill(skillId, task);
-      skillOutputs.push(`[${result.skillId}] ${result.summary}\n${result.output}`);
+      const summary = `[${result.skillId}] ${result.summary}\n${result.output}`;
+      skillOutputs.push(summary);
+      const observation = (result.output || result.summary || '').slice(0, 400);
+      const signal: TrajectoryStep['signal'] = /Execution failed|not in the safe allowlist|no url was present|no inline shell command/i.test(observation)
+        ? 'failure'
+        : 'success';
+      steps.push({
+        attempt: attemptNumber,
+        action: `skill.${skillId}`,
+        input: task,
+        observation,
+        signal,
+        durationMs: Date.now() - skillStarted
+      });
     } catch (error) {
-      skillOutputs.push(`[${skillId}] Execution failed: ${error instanceof Error ? error.message : String(error)}`);
+      const message = error instanceof Error ? error.message : String(error);
+      skillOutputs.push(`[${skillId}] Execution failed: ${message}`);
+      steps.push({
+        attempt: attemptNumber,
+        action: `skill.${skillId}`,
+        input: task,
+        observation: message.slice(0, 400),
+        signal: 'failure',
+        durationMs: Date.now() - skillStarted
+      });
     }
   }
 
@@ -159,7 +199,43 @@ async function executeAttempt(
     'Result: task has been analyzed and prepared for execution in the local runtime.'
   ].filter(Boolean).join('\n');
 
-  return { output: modelResponse || fallbackOutput, skillOutputs };
+  const rawOutput = modelResponse || fallbackOutput;
+  return { output: rawOutput, rawOutput, skillOutputs, steps };
+}
+
+async function applyAgentMemoryOps(rawOutput: string, retrievalContext: { task: string }): Promise<{ cleaned: string; applied: AppliedMemoryOp[] }> {
+  const { cleaned, ops } = parseMemoryOps(rawOutput);
+  const applied: AppliedMemoryOp[] = [];
+  for (const op of ops) {
+    if (op.kind === 'store') {
+      const stored = await appendMemory({
+        kind: op.memoryKind,
+        task: retrievalContext.task,
+        content: op.content,
+        tags: ['agent-tool', ...op.tags],
+        importance: op.importance
+      });
+      applied.push({ kind: 'store', detail: `${op.memoryKind} (${stored.id})`, affectedIds: [stored.id] });
+    } else if (op.kind === 'boost') {
+      const items = await loadMemory();
+      const target = items.find((entry) => entry.id === op.id);
+      if (target) {
+        await updateMemoryImportance(op.id, target.importance + op.delta);
+        applied.push({ kind: 'boost', detail: `${op.id} ${op.delta >= 0 ? '+' : ''}${op.delta}`, affectedIds: [op.id] });
+      }
+    } else if (op.kind === 'discard') {
+      const removed = await deleteMemory(op.id);
+      if (removed) applied.push({ kind: 'discard', detail: op.id, affectedIds: [op.id] });
+    } else if (op.kind === 'merge') {
+      const result = await mergeMemories(op.ids);
+      if (result.kept) {
+        applied.push({ kind: 'merge', detail: `kept ${result.kept}, merged ${result.merged}`, affectedIds: [result.kept, ...op.ids] });
+      }
+    } else if (op.kind === 'retrieve') {
+      applied.push({ kind: 'retrieve', detail: op.query, affectedIds: [] });
+    }
+  }
+  return { cleaned, applied };
 }
 
 async function maybeEvolve(profile: SoulProfile, config: RuntimeConfig): Promise<{ profile: SoulProfile; insights: Insight[]; consolidated: number; playbookCount: number }> {
@@ -265,8 +341,12 @@ export async function runTask(task: string): Promise<RunRecord> {
   };
 
   let attempt = 1;
-  let { output, skillOutputs } = await executeAttempt(task, attempt, null, baseContext);
+  let firstAttemptSucceeded = false;
+  const allSteps: TrajectoryStep[] = [];
+  let { output, rawOutput, skillOutputs, steps } = await executeAttempt(task, attempt, null, baseContext);
+  allSteps.push(...steps);
   let reflectionDetail: ReflectionResult = evaluateOutcome({ task, output, usedSkills, status: 'completed' });
+  if (reflectionDetail.success) firstAttemptSucceeded = true;
 
   if (!reflectionDetail.success && config.evolution.retryOnFailure && config.evolution.maxRetries > 0) {
     const retryLimit = Math.min(config.evolution.maxRetries, 3);
@@ -275,9 +355,24 @@ export async function runTask(task: string): Promise<RunRecord> {
       const feedback = buildRetryFeedback(reflectionDetail, { task, output, usedSkills });
       const next = await executeAttempt(task, attempt, feedback, baseContext);
       output = next.output;
+      rawOutput = next.rawOutput;
       skillOutputs = next.skillOutputs;
+      allSteps.push(...next.steps);
       reflectionDetail = evaluateOutcome({ task, output, usedSkills, status: 'completed' });
     }
+  }
+
+  const memoryOpResult = await applyAgentMemoryOps(rawOutput, { task });
+  if (memoryOpResult.cleaned && memoryOpResult.cleaned !== output) {
+    output = memoryOpResult.cleaned;
+  }
+  if (memoryOpResult.applied.length > 0) {
+    allSteps.push({
+      attempt,
+      action: 'memory.tools',
+      observation: memoryOpResult.applied.map((entry) => `${entry.kind}: ${entry.detail}`).join('; '),
+      signal: 'success'
+    });
   }
 
   const checkerVerdict: CheckerVerdict = await checkRunOutcome(task, output, reflectionDetail, {
@@ -299,7 +394,10 @@ export async function runTask(task: string): Promise<RunRecord> {
     reflectionDetail: { ...reflectionDetail, success: ratifiedSuccess },
     retrievedMemoryIds: retrieved.map((entry) => entry.item.id),
     appliedInsightIds: applicableInsights.map((insight) => insight.id),
-    checkerVerdict
+    checkerVerdict,
+    steps: allSteps,
+    memoryOps: memoryOpResult.applied,
+    firstAttemptSucceeded: ratifiedSuccess && firstAttemptSucceeded
   };
 
   const storedRun = await appendRun(draftRun);

@@ -11,6 +11,7 @@ type CacheShape = {
 };
 
 let memoryCache: CacheShape | null = null;
+let memoryCachePath: string | null = null;
 let saveTimer: NodeJS.Timeout | null = null;
 const inflight = new Map<string, Promise<number[] | null>>();
 
@@ -19,13 +20,15 @@ export function hashContent(text: string): string {
 }
 
 async function loadCache(): Promise<CacheShape> {
-  if (memoryCache) return memoryCache;
-  if (!(await fs.pathExists(embeddingsCachePath))) {
+  const currentPath = embeddingsCachePath();
+  if (memoryCache && memoryCachePath === currentPath) return memoryCache;
+  memoryCachePath = currentPath;
+  if (!(await fs.pathExists(currentPath))) {
     memoryCache = { version: 1, entries: {} };
     return memoryCache;
   }
   try {
-    const raw = await fs.readJson(embeddingsCachePath);
+    const raw = await fs.readJson(currentPath);
     memoryCache = {
       version: typeof raw?.version === 'number' ? raw.version : 1,
       entries: raw?.entries && typeof raw.entries === 'object' ? raw.entries : {}
@@ -38,7 +41,7 @@ async function loadCache(): Promise<CacheShape> {
 
 function scheduleFlush(): void {
   if (saveTimer) return;
-  saveTimer = setTimeout(async () => {
+  const timer = setTimeout(async () => {
     saveTimer = null;
     if (!memoryCache) return;
     const entries = Object.entries(memoryCache.entries);
@@ -47,11 +50,13 @@ function scheduleFlush(): void {
       memoryCache.entries = Object.fromEntries(entries.slice(0, MAX_ENTRIES));
     }
     try {
-      await fs.outputJson(embeddingsCachePath, memoryCache, { spaces: 0 });
+      await fs.outputJson(memoryCachePath || embeddingsCachePath(), memoryCache, { spaces: 0 });
     } catch {
       /* swallow disk errors; cache remains in memory */
     }
-  }, 200).unref?.() ?? null;
+  }, 200);
+  timer.unref?.();
+  saveTimer = timer;
 }
 
 export async function getCachedEmbedding(text: string): Promise<number[] | null> {
@@ -123,5 +128,5 @@ export async function flushEmbeddings(): Promise<void> {
     saveTimer = null;
   }
   if (!memoryCache) return;
-  await fs.outputJson(embeddingsCachePath, memoryCache, { spaces: 0 });
+  await fs.outputJson(memoryCachePath || embeddingsCachePath(), memoryCache, { spaces: 0 });
 }
