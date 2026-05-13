@@ -212,6 +212,41 @@ Builds and runs the unit suite under Node's built-in test runner. Coverage
 spans memory retrieval scoring, reflection signal detection, insight
 reconciliation, soul aggregation, and the heuristic checker.
 
+## MCP server (use this runtime as any MCP client's memory backend)
+
+```bash
+node dist/cli.js mcp
+```
+
+Starts an [MCP](https://modelcontextprotocol.io) stdio server that exposes the
+soul's memory, insights, playbooks, and run engine as tools and resources.
+
+**Tools:** `memory_store`, `memory_retrieve`, `memory_boost`, `memory_discard`,
+`memory_merge`, `run_task`, `soul_status`, `soul_evolve`, `playbooks_list`,
+`playbooks_synthesize`.
+
+**Resources:** `agent-soul://soul/profile`, `agent-soul://insights/top`,
+`agent-soul://playbooks/active`, `agent-soul://memory/recent`,
+`agent-soul://runs/recent`.
+
+Register with Claude Code (`~/.claude.json`):
+
+```json
+{
+  "mcpServers": {
+    "agent-soul": {
+      "command": "node",
+      "args": ["/absolute/path/to/Agent-Soul-Evolution/dist/cli.js", "mcp"]
+    }
+  }
+}
+```
+
+The same JSON shape works for any MCP-aware client (Cursor, Codex CLI,
+Continue, Gemini CLI). Once registered the agent can call
+`memory_store` / `memory_retrieve` / `run_task` directly, and read live
+soul state through the resource URIs.
+
 ## Roadmap
 
 - Workflow editor

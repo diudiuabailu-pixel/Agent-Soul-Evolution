@@ -284,4 +284,10 @@ program.command('start').description('Start local runtime and open the web conso
   });
 });
 
+program.command('mcp').description('Start MCP stdio server exposing memory, insights, playbooks, and run tools').action(async () => {
+  await ensureRuntime();
+  const { startMcpStdioServer } = await import('./mcp-server.js');
+  await startMcpStdioServer();
+});
+
 program.parseAsync(process.argv);

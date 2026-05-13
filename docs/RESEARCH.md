@@ -69,6 +69,21 @@ configured endpoint's `/embeddings` route. If the endpoint does not implement
 embeddings, the fallback is graceful — relevance silently reverts to token
 Jaccard.
 
+## MCP server interoperability (2026 inter-agent protocols)
+
+`src/mcp-server.ts` exposes the soul's memory, insights, playbooks, and run
+engine through the [Model Context Protocol](https://modelcontextprotocol.io)
+(MCP, the 2026 de-facto standard for inter-agent tool access, also surveyed
+in arXiv:2505.02279). The runtime can therefore be plugged into any
+MCP-aware client (Claude Code, Cursor, Codex CLI, Gemini CLI, Continue) as
+a persistent memory and self-evolving experience backend, rather than only
+running as a stand-alone CLI.
+
+Ten tools and five resource URIs are registered through the SDK's
+`McpServer` API. The integration test suite (`tests/mcp-server.test.js`)
+uses the SDK's `InMemoryTransport` to drive the server with a real client
+without spawning a subprocess.
+
 ## Memory-as-Tools (AgeMem 2026)
 
 `src/runtime/memory-tools.ts` exposes the five core memory operations from
