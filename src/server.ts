@@ -28,6 +28,7 @@ import { defaultWorkflow } from './runtime/workflow.js';
 import { deriveCandidateInsights, reconcileInsights } from './runtime/insights.js';
 import { deriveCandidatePlaybooks, reconcilePlaybooks } from './runtime/playbooks.js';
 import { recordEvolution, refreshIdentity } from './runtime/soul.js';
+import { runEvents } from './runtime/events.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -186,6 +187,76 @@ export async function createServer() {
     const refreshed = refreshIdentity(evolved, agent, next);
     await saveSoulProfile(refreshed);
     res.json({ insights: next, soul: refreshed, operations: ops });
+  });
+
+  app.post('/a2a/messages', async (req, res) => {
+    const envelope = req.body ?? {};
+    const message = envelope?.message ?? envelope;
+    const textPart = Array.isArray(message?.parts)
+      ? message.parts.find((part: { type?: string; text?: string }) => part?.type === 'text' && typeof part?.text === 'string')
+      : null;
+    const inferredText = typeof message?.content === 'string' ? message.content : textPart?.text;
+    const task = typeof inferredText === 'string' && inferredText.trim().length > 0
+      ? inferredText.trim()
+      : typeof envelope?.task === 'string' ? envelope.task : '';
+    if (!task) {
+      res.status(400).json({ error: 'A2A envelope must include message.parts[].text, message.content, or task.' });
+      return;
+    }
+    try {
+      const run = await runTask(task);
+      res.json({
+        protocol: 'a2a/v1',
+        message: {
+          role: 'agent',
+          parts: [
+            { type: 'text', text: run.output },
+            { type: 'text', text: `Reflection: ${run.reflection}` }
+          ],
+          metadata: {
+            runId: run.id,
+            status: run.status,
+            attempts: run.attempts,
+            usedSkills: run.usedSkills,
+            checkerVerdict: run.checkerVerdict
+          }
+        }
+      });
+    } catch (error) {
+      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  app.get('/a2a/agent-card', (_req, res) => {
+    res.json({
+      protocol: 'a2a/v1',
+      name: 'agent-soul-evolution',
+      version: '0.2.0',
+      description: 'Local self-evolving agent runtime with memory, insights, playbooks, and reflection.',
+      capabilities: ['memory.retrieve', 'memory.store', 'run.execute', 'soul.evolve']
+    });
+  });
+
+  app.get('/api/events', (req, res) => {
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.flushHeaders?.();
+    res.write(`event: ping\ndata: ${JSON.stringify({ now: new Date().toISOString() })}\n\n`);
+    const listener = (event: unknown) => {
+      try {
+        res.write(`event: run\ndata: ${JSON.stringify(event)}\n\n`);
+      } catch { /* client disconnected */ }
+    };
+    runEvents.on('event', listener);
+    const heartbeat = setInterval(() => {
+      try { res.write(`event: heartbeat\ndata: ${Date.now()}\n\n`); } catch { /* ignore */ }
+    }, 15_000);
+    req.on('close', () => {
+      runEvents.off('event', listener);
+      clearInterval(heartbeat);
+      res.end();
+    });
   });
 
   app.use((_req, res) => {

@@ -13,13 +13,24 @@ const EMPTY_SOUL: SoulProfile = {
   firstAttemptSuccesses: 0,
   retryAttempts: 0,
   retrySuccesses: 0,
-  retryUplift: 0
+  retryUplift: 0,
+  lifetimeTokens: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+  lifetimeMs: 0,
+  checkerCalibration: {
+    samples: 0,
+    brierScoreSum: 0,
+    averageBrier: 0,
+    overconfidentCount: 0,
+    underconfidentCount: 0
+  }
 };
 
 function clone(profile: SoulProfile): SoulProfile {
   return {
     ...profile,
-    skillStats: Object.fromEntries(Object.entries(profile.skillStats).map(([key, value]) => [key, { ...value }]))
+    skillStats: Object.fromEntries(Object.entries(profile.skillStats).map(([key, value]) => [key, { ...value }])),
+    lifetimeTokens: { ...(profile.lifetimeTokens || { promptTokens: 0, completionTokens: 0, totalTokens: 0 }) },
+    checkerCalibration: { ...(profile.checkerCalibration || EMPTY_SOUL.checkerCalibration) }
   };
 }
 
@@ -75,6 +86,26 @@ export function applyRunToSoul(profile: SoulProfile, run: RunRecord): SoulProfil
   }
   next.retryUplift = next.retryAttempts > 0 ? next.retrySuccesses / next.retryAttempts : 0;
 
+  if (run.tokenUsage) {
+    next.lifetimeTokens.promptTokens += run.tokenUsage.promptTokens;
+    next.lifetimeTokens.completionTokens += run.tokenUsage.completionTokens;
+    next.lifetimeTokens.totalTokens += run.tokenUsage.totalTokens;
+  }
+  if (typeof run.durationMs === 'number') {
+    next.lifetimeMs += run.durationMs;
+  }
+
+  if (run.checkerVerdict) {
+    const predicted = run.checkerVerdict.satisfied ? run.checkerVerdict.confidence : 1 - run.checkerVerdict.confidence;
+    const actual = success ? 1 : 0;
+    const brier = (predicted - actual) ** 2;
+    next.checkerCalibration.samples += 1;
+    next.checkerCalibration.brierScoreSum += brier;
+    next.checkerCalibration.averageBrier = next.checkerCalibration.brierScoreSum / next.checkerCalibration.samples;
+    if (run.checkerVerdict.satisfied && !success) next.checkerCalibration.overconfidentCount += 1;
+    if (!run.checkerVerdict.satisfied && success) next.checkerCalibration.underconfidentCount += 1;
+  }
+
   for (const skill of run.usedSkills) {
     const entry = next.skillStats[skill] || { used: 0, succeeded: 0 };
     entry.used += 1;
@@ -104,8 +135,12 @@ export function recordEvolution(profile: SoulProfile): SoulProfile {
 export function summarizeSoul(profile: SoulProfile): string {
   const successPct = (profile.successRate * 100).toFixed(1);
   const retryPct = profile.retryAttempts > 0 ? `${(profile.retryUplift * 100).toFixed(0)}%` : 'n/a';
+  const tokens = profile.lifetimeTokens?.totalTokens ?? 0;
+  const brier = profile.checkerCalibration?.samples > 0
+    ? ` brier=${profile.checkerCalibration.averageBrier.toFixed(3)}`
+    : '';
   const top = topSkills(profile.skillStats, 3)
     .map((entry) => `${entry.id} ${entry.succeeded}/${entry.used}`)
     .join(' | ');
-  return `runs=${profile.runs} success=${successPct}% retryUplift=${retryPct} generations=${profile.generations}${top ? ` | top: ${top}` : ''}`;
+  return `runs=${profile.runs} success=${successPct}% retryUplift=${retryPct} tokens=${tokens}${brier} generations=${profile.generations}${top ? ` | top: ${top}` : ''}`;
 }

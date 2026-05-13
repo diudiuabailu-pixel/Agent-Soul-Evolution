@@ -119,12 +119,109 @@ export function reconcilePlaybooks(existing: Playbook[], candidates: Playbook[])
 export function selectPlaybook(playbooks: Playbook[], task: string): Playbook | null {
   if (playbooks.length === 0) return null;
   const taskTokens = tokenSet(task);
-  let best: { entry: Playbook; score: number } | null = null;
-  for (const entry of playbooks) {
+  const lookup = new Map(playbooks.map((entry) => [entry.id, entry]));
+  function score(entry: Playbook): number {
     const triggerScore = jaccard(taskTokens, tokenSet(entry.trigger || entry.title));
-    const score = triggerScore * 0.7 + entry.successRate * 0.3;
-    if (score < 0.1) continue;
-    if (!best || score > best.score) best = { entry, score };
+    return triggerScore * 0.7 + entry.successRate * 0.3;
   }
-  return best ? best.entry : null;
+  function descend(entry: Playbook, currentScore: number): { entry: Playbook; score: number } {
+    const children = (entry.childIds ?? []).map((id) => lookup.get(id)).filter((child): child is Playbook => Boolean(child));
+    let best = { entry, score: currentScore };
+    for (const child of children) {
+      const childScore = score(child);
+      if (childScore > best.score) best = descend(child, childScore);
+    }
+    return best;
+  }
+  let bestOverall: { entry: Playbook; score: number } | null = null;
+  for (const root of playbooks.filter((entry) => !entry.parentId)) {
+    const rootScore = score(root);
+    if (rootScore < 0.1) continue;
+    const candidate = descend(root, rootScore);
+    if (!bestOverall || candidate.score > bestOverall.score) bestOverall = candidate;
+  }
+  if (!bestOverall) {
+    for (const entry of playbooks) {
+      const entryScore = score(entry);
+      if (entryScore < 0.1) continue;
+      if (!bestOverall || entryScore > bestOverall.score) bestOverall = { entry, score: entryScore };
+    }
+  }
+  return bestOverall ? bestOverall.entry : null;
+}
+
+export type PlaybookOp =
+  | { kind: 'fixed'; id: string; reason: string }
+  | { kind: 'derived'; parents: string[]; child: Playbook }
+  | { kind: 'pruned'; id: string; reason: string };
+
+export type PlaybookCycleResult = {
+  next: Playbook[];
+  ops: PlaybookOp[];
+};
+
+const FIX_THRESHOLD = 0.4;
+const DERIVE_OVERLAP = 0.5;
+
+function rebuildSuccessRate(playbook: Playbook, runs: RunRecord[]): number {
+  const recent = runs.filter((run) => playbook.origins.includes(run.id));
+  if (recent.length === 0) return playbook.successRate;
+  const successes = recent.filter((run) => run.reflectionDetail?.success ?? run.status === 'completed').length;
+  return successes / recent.length;
+}
+
+export function evolvePlaybooks(existing: Playbook[], recentRuns: RunRecord[]): PlaybookCycleResult {
+  const next = existing.map((entry) => ({ ...entry }));
+  const ops: PlaybookOp[] = [];
+
+  for (const playbook of next) {
+    if (playbook.support < 3) continue;
+    const observed = rebuildSuccessRate(playbook, recentRuns);
+    if (observed < FIX_THRESHOLD && observed < playbook.successRate) {
+      const previous = playbook.prompt;
+      const reason = `success rate fell from ${(playbook.successRate * 100).toFixed(0)}% to ${(observed * 100).toFixed(0)}%`;
+      playbook.prompt = `${previous}\nFIX: recent runs show this playbook is no longer reliable; verify preconditions before applying.`;
+      playbook.successRate = observed;
+      playbook.updatedAt = new Date().toISOString();
+      ops.push({ kind: 'fixed', id: playbook.id, reason });
+    }
+  }
+
+  for (let i = 0; i < next.length; i += 1) {
+    for (let j = i + 1; j < next.length; j += 1) {
+      const a = next[i];
+      const b = next[j];
+      if (a.suggestedSkills.length === 0 || b.suggestedSkills.length === 0) continue;
+      const aTokens = tokenSet(a.trigger || a.title);
+      const bTokens = tokenSet(b.trigger || b.title);
+      const overlap = jaccard(aTokens, bTokens);
+      if (overlap < DERIVE_OVERLAP) continue;
+      const skillsOverlap = a.suggestedSkills.filter((skill) => b.suggestedSkills.includes(skill));
+      if (skillsOverlap.length === 0) continue;
+      const combinedTriggers = Array.from(new Set([...aTokens, ...bTokens])).join(' ');
+      const child: Playbook = {
+        id: nanoid(),
+        title: `Derived playbook for "${(a.title.replace(/^Playbook for /, '') + ' / ' + b.title.replace(/^Playbook for /, '')).slice(0, 70)}"`,
+        trigger: combinedTriggers.split(/\s+/).slice(0, 6).join(' '),
+        prompt: `Derived from "${a.title}" and "${b.title}".\nUse skills in order: ${skillsOverlap.join(', ')}.\nApply when the task overlaps the union of triggers.`,
+        suggestedSkills: skillsOverlap,
+        support: a.support + b.support,
+        successRate: (a.successRate + b.successRate) / 2,
+        createdAt: nowIso(),
+        updatedAt: nowIso(),
+        origins: Array.from(new Set([...a.origins, ...b.origins])).slice(0, 6),
+        childIds: [a.id, b.id]
+      };
+      a.parentId = child.id;
+      b.parentId = child.id;
+      const alreadyDerived = next.some((entry) => entry.title === child.title);
+      if (!alreadyDerived) {
+        next.push(child);
+        ops.push({ kind: 'derived', parents: [a.id, b.id], child });
+        return { next, ops };
+      }
+    }
+  }
+
+  return { next, ops };
 }

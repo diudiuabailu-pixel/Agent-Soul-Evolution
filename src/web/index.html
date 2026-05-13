@@ -52,6 +52,8 @@
           <input id="taskInput" value="Summarize the files in this workspace and suggest the next action." />
           <button id="runButton">Run task</button>
           <pre id="runOutput">No task executed yet.</pre>
+          <div class="label" style="margin-top: 10px;">Live trajectory</div>
+          <pre id="liveTrajectory" style="max-height: 200px; overflow-y: auto;">Streaming connection idle.</pre>
         </div>
       </section>
 
@@ -372,6 +374,34 @@
       await loadState();
     });
 
+    function startEventStream() {
+      const pane = document.getElementById('liveTrajectory');
+      if (!pane) return;
+      try {
+        const source = new EventSource('/api/events');
+        const lines = [];
+        const append = (text) => {
+          lines.push(text);
+          while (lines.length > 40) lines.shift();
+          pane.textContent = lines.join('\n');
+          pane.scrollTop = pane.scrollHeight;
+        };
+        source.addEventListener('run', (e) => {
+          try {
+            const event = JSON.parse(e.data);
+            if (event.type === 'run.start') append(`▶ ${event.task}`);
+            else if (event.type === 'run.attempt') append(`# attempt ${event.attempt}`);
+            else if (event.type === 'run.step') append(`  [${event.step.signal}] ${event.step.action} — ${(event.step.observation || '').slice(0, 140)}`);
+            else if (event.type === 'run.memory_op') append(`  · memory ${event.kind}: ${event.detail}`);
+            else if (event.type === 'run.complete') append(`✓ done (${event.status}, ${event.attempts} attempts)`);
+          } catch {}
+        });
+        source.addEventListener('ping', () => append('— stream open —'));
+      } catch (error) {
+        pane.textContent = 'Streaming unavailable in this browser.';
+      }
+    }
+    startEventStream();
     loadState();
   </script>
 </body>

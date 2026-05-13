@@ -78,10 +78,94 @@ async function runShellCommand(task: string): Promise<SkillExecution> {
   };
 }
 
+async function runNoteTaker(task: string): Promise<SkillExecution> {
+  const { getDb } = await import('./db.js');
+  const match = task.match(/note[: -]+([\s\S]+)/i);
+  const body = match ? match[1].trim() : task;
+  if (!body) {
+    return { skillId: 'note-taker', summary: 'No note text found.', output: 'Provide a note after `note:` or in the task body.' };
+  }
+  const id = Math.random().toString(36).slice(2, 10);
+  const title = body.slice(0, 60);
+  const createdAt = new Date().toISOString();
+  getDb().prepare('INSERT INTO notes (id, title, body, created_at, tags) VALUES (?, ?, ?, ?, ?)').run(id, title, body, createdAt, '[]');
+  return {
+    skillId: 'note-taker',
+    summary: `Saved note ${id}.`,
+    output: `Recorded note: ${title}\n(${body.length} characters at ${createdAt})`
+  };
+}
+
+async function runCodeEdit(task: string): Promise<SkillExecution> {
+  const planMatch = task.match(/edit\s+`([^`]+)`/i);
+  const replaceMatch = task.match(/replace\s+`([^`]+)`\s+with\s+`([^`]+)`/i);
+  if (!planMatch || !replaceMatch) {
+    return {
+      skillId: 'code-edit',
+      summary: 'Code edit needs file + replacement spec.',
+      output: 'Format: `edit `path/to/file` replace `old text` with `new text``. The skill returns a preview only — the agent must apply changes via shell-command or a separate write step.'
+    };
+  }
+  const target = planMatch[1];
+  const oldText = replaceMatch[1];
+  const newText = replaceMatch[2];
+  if (target.includes('..') || path.isAbsolute(target)) {
+    return { skillId: 'code-edit', summary: 'Refusing to edit outside workspace.', output: 'Edit paths must be workspace-relative and may not contain "..".' };
+  }
+  const full = path.join(projectRoot(), target);
+  if (!(await fs.pathExists(full))) {
+    return { skillId: 'code-edit', summary: 'File not found.', output: `No such file: ${target}` };
+  }
+  const original = await fs.readFile(full, 'utf8');
+  if (!original.includes(oldText)) {
+    return { skillId: 'code-edit', summary: 'old text not found.', output: `Could not find substring in ${target}.` };
+  }
+  const preview = original.replace(oldText, newText);
+  const previewSnippet = preview.slice(0, 600);
+  return {
+    skillId: 'code-edit',
+    summary: `Preview computed for ${target} (${original.length} → ${preview.length} chars).`,
+    output: `Preview for ${target}:\n----\n${previewSnippet}${preview.length > 600 ? '\n...[truncated]' : ''}\n----\nThe change has not been applied. Confirm and persist via a follow-up action.`
+  };
+}
+
+async function runWebSearch(task: string): Promise<SkillExecution> {
+  const endpoint = process.env.ASE_SEARCH_URL;
+  if (!endpoint) {
+    return {
+      skillId: 'web-search',
+      summary: 'No ASE_SEARCH_URL configured.',
+      output: 'Set ASE_SEARCH_URL (and optional ASE_SEARCH_TOKEN) to point at a JSON search API that accepts ?q=. The skill returns top snippets.'
+    };
+  }
+  const url = new URL(endpoint);
+  url.searchParams.set('q', task);
+  const headers: Record<string, string> = {};
+  if (process.env.ASE_SEARCH_TOKEN) headers.Authorization = `Bearer ${process.env.ASE_SEARCH_TOKEN}`;
+  try {
+    const response = await fetch(url.toString(), { headers });
+    if (!response.ok) {
+      return { skillId: 'web-search', summary: `Search endpoint returned ${response.status}.`, output: `HTTP ${response.status}` };
+    }
+    const data = await response.json() as { results?: Array<{ title?: string; url?: string; snippet?: string }> };
+    const results = (data.results ?? []).slice(0, 5);
+    if (results.length === 0) {
+      return { skillId: 'web-search', summary: 'No search results.', output: `No hits for: ${task}` };
+    }
+    const formatted = results.map((entry, idx) => `${idx + 1}. ${entry.title ?? '(no title)'}\n   ${entry.url ?? ''}\n   ${entry.snippet ?? ''}`).join('\n\n');
+    return { skillId: 'web-search', summary: `Found ${results.length} results.`, output: formatted };
+  } catch (error) {
+    return { skillId: 'web-search', summary: 'Search request failed.', output: error instanceof Error ? error.message : String(error) };
+  }
+}
+
 export async function executeSkill(skillId: string, task: string): Promise<SkillExecution> {
   if (skillId === 'file-browser') return runFileBrowser(task);
   if (skillId === 'web-fetch') return runWebFetch(task);
   if (skillId === 'shell-command') return runShellCommand(task);
+  if (skillId === 'note-taker') return runNoteTaker(task);
+  if (skillId === 'code-edit') return runCodeEdit(task);
+  if (skillId === 'web-search') return runWebSearch(task);
 
   return {
     skillId,

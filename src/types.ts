@@ -37,7 +37,16 @@ export type RuntimeConfig = {
     linkMemoriesOnWrite: boolean;
     oneHopExpansion: boolean;
     synthesizePlaybooks: boolean;
+    forestOfThoughtSamples: number;
+    forestOfThoughtThreshold: number;
+    memoryProvenance: boolean;
   };
+};
+
+export type EvalCase = {
+  name: string;
+  task: string;
+  expectsAny: string[];
 };
 
 export type Playbook = {
@@ -51,9 +60,17 @@ export type Playbook = {
   createdAt: string;
   updatedAt: string;
   origins: string[];
+  parentId?: string;
+  childIds?: string[];
 };
 
 export type MemoryKind = 'result' | 'reflection' | 'lesson' | 'insight';
+
+export type MemoryProvenance = {
+  source: string;
+  signature: string;
+  signedAt: string;
+};
 
 export type MemoryItem = {
   id: string;
@@ -67,6 +84,7 @@ export type MemoryItem = {
   lastAccessedAt: string;
   embedding?: number[];
   links?: string[];
+  provenance?: MemoryProvenance;
 };
 
 export type ReflectionResult = {
@@ -116,6 +134,8 @@ export type RunRecord = {
   steps?: TrajectoryStep[];
   memoryOps?: AppliedMemoryOp[];
   firstAttemptSucceeded?: boolean;
+  tokenUsage?: { promptTokens: number; completionTokens: number; totalTokens: number };
+  durationMs?: number;
 };
 
 export type AgentProfile = {
@@ -152,4 +172,13 @@ export type SoulProfile = {
   retryAttempts: number;
   retrySuccesses: number;
   retryUplift: number;
+  lifetimeTokens: { promptTokens: number; completionTokens: number; totalTokens: number };
+  lifetimeMs: number;
+  checkerCalibration: {
+    samples: number;
+    brierScoreSum: number;
+    averageBrier: number;
+    overconfidentCount: number;
+    underconfidentCount: number;
+  };
 };

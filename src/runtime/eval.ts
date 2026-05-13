@@ -1,10 +1,6 @@
+import fs from 'fs-extra';
 import { runTask } from './engine.js';
-
-export type EvalCase = {
-  name: string;
-  task: string;
-  expectsAny: string[];
-};
+import type { EvalCase } from '../types.js';
 
 export type EvalResult = {
   name: string;
@@ -33,10 +29,24 @@ export const defaultEvalSuite: EvalCase[] = [
   }
 ];
 
-export async function runEvalSuite(): Promise<{ passed: number; total: number; results: EvalResult[]; successRate: number }> {
+export async function loadEvalSuiteFromFile(filePath: string): Promise<EvalCase[]> {
+  if (!(await fs.pathExists(filePath))) throw new Error(`No eval file at ${filePath}`);
+  const raw = (await fs.readJson(filePath)) as unknown;
+  if (!Array.isArray(raw)) throw new Error('Eval file must be a JSON array of {name, task, expectsAny}.');
+  return raw
+    .filter((entry) => entry && typeof entry === 'object' && typeof (entry as EvalCase).task === 'string')
+    .map((entry) => ({
+      name: String((entry as EvalCase).name ?? 'unnamed'),
+      task: String((entry as EvalCase).task),
+      expectsAny: Array.isArray((entry as EvalCase).expectsAny) ? (entry as EvalCase).expectsAny.map(String) : []
+    }));
+}
+
+export async function runEvalSuite(extraCases: EvalCase[] = []): Promise<{ passed: number; total: number; results: EvalResult[]; successRate: number }> {
+  const cases = [...defaultEvalSuite, ...extraCases];
   const results: EvalResult[] = [];
 
-  for (const testCase of defaultEvalSuite) {
+  for (const testCase of cases) {
     const run = await runTask(testCase.task);
     const matched = testCase.expectsAny.filter((token) => run.output.includes(token) || run.reflection.includes(token));
     results.push({

@@ -18,7 +18,10 @@ import {
 } from './runtime/storage.js';
 import { getSkillManifest } from './skills/catalog.js';
 import { loadAllSkillManifests, installSkillPackage } from './runtime/discovery.js';
-import { runEvalSuite } from './runtime/eval.js';
+import { loadEvalSuiteFromFile, runEvalSuite } from './runtime/eval.js';
+import { evolvePromptOnce } from './runtime/prompt-evolver.js';
+import { exportSoul, importSoul } from './runtime/soul-package.js';
+import { auditMemoryProvenance, backfillProvenance } from './runtime/governance.js';
 import { listOllamaModels } from './runtime/ollama.js';
 import { createServer } from './server.js';
 import { runTask } from './runtime/engine.js';
@@ -202,13 +205,68 @@ program.command('memory:consolidate')
     console.log(`Merged ${result.merged} memory item(s); now ${result.items.length} stored.`);
   });
 
-program.command('eval').description('Run the default evaluation suite').action(async () => {
-  const result = await runEvalSuite();
-  console.log(`Passed ${result.passed}/${result.total}`);
-  for (const item of result.results) {
-    console.log(`- ${item.name}: ${item.passed ? 'PASS' : 'FAIL'}${item.matched.length ? ` (${item.matched.join(', ')})` : ''}`);
-  }
-});
+program.command('eval')
+  .description('Run the default evaluation suite (or load extra cases from a JSON file)')
+  .option('--file <path>', 'Optional JSON file with extra eval cases')
+  .action(async (options: { file?: string }) => {
+    const extra = options.file ? await loadEvalSuiteFromFile(options.file) : [];
+    const result = await runEvalSuite(extra);
+    console.log(`Passed ${result.passed}/${result.total} (success rate ${(result.successRate * 100).toFixed(1)}%)`);
+    for (const item of result.results) {
+      console.log(`- ${item.name}: ${item.passed ? 'PASS' : 'FAIL'}${item.matched.length ? ` (${item.matched.join(', ')})` : ''}`);
+    }
+  });
+
+program.command('prompt:evolve')
+  .description('Run an EvoAgentX-style prompt optimization cycle (uses eval suite as fitness)')
+  .option('--file <path>', 'Optional eval JSON to include in fitness evaluation')
+  .action(async (options: { file?: string }) => {
+    const extra = options.file ? await loadEvalSuiteFromFile(options.file) : [];
+    const report = await evolvePromptOnce(extra);
+    console.log(`Baseline success: ${(report.baselineSuccessRate * 100).toFixed(1)}%`);
+    if (report.best) {
+      console.log(`Improved to ${(report.best.successRate * 100).toFixed(1)}% — ${report.best.rationale}`);
+    } else {
+      console.log('No candidate beat the baseline; agent prompt unchanged.');
+    }
+    for (const rejected of report.rejected) {
+      console.log(`  rejected (${(rejected.successRate * 100).toFixed(1)}%): ${rejected.rationale.slice(0, 80)}`);
+    }
+  });
+
+program.command('soul:export')
+  .description('Export the soul (memory + insights + playbooks + runs) to a JSON package')
+  .argument('<path>')
+  .action(async (target: string) => {
+    const result = await exportSoul(target);
+    console.log(`Exported soul to ${result.path} (${result.bytes} bytes)`);
+  });
+
+program.command('soul:import')
+  .description('Import a soul package previously created via soul:export')
+  .argument('<path>')
+  .option('--replace', 'Replace existing entries instead of merging')
+  .action(async (source: string, options: { replace?: boolean }) => {
+    const result = await importSoul(source, { merge: !options.replace });
+    console.log(`Imported soul: ${JSON.stringify(result)}`);
+  });
+
+program.command('memory:audit')
+  .description('Audit memory provenance signatures (SSGM)')
+  .action(async () => {
+    const audit = await auditMemoryProvenance();
+    console.log(`signed=${audit.signed} unsigned=${audit.unsigned} tampered=${audit.tampered.length} total=${audit.total}`);
+    for (const entry of audit.tampered.slice(0, 10)) {
+      console.log(`tampered ${entry.id}: expected ${entry.expected.slice(0, 16)}…`);
+    }
+  });
+
+program.command('memory:sign-existing')
+  .description('Backfill provenance signatures on previously stored memories')
+  .action(async () => {
+    const touched = await backfillProvenance();
+    console.log(`Signed ${touched} previously unsigned memory item(s).`);
+  });
 
 program.command('soul').description('Show the current soul profile and top insights').action(async () => {
   const [soul, insights] = await Promise.all([loadSoulProfile(), loadInsights()]);

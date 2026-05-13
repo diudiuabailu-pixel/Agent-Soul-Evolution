@@ -21,7 +21,7 @@ import {
   updateMemoryLinks
 } from './storage.js';
 import { buildRetryFeedback, evaluateOutcome, summarizeReflection } from './reflection.js';
-import { invokeModel } from './model.js';
+import { invokeModelWithUsage } from './model.js';
 import { embedWithCache, enqueueEmbeddingJob } from './embedding-cache.js';
 import { executeSkill } from './skill-runner.js';
 import { defaultWorkflow } from './workflow.js';
@@ -30,8 +30,9 @@ import { deriveCandidateInsights, reconcileInsights, selectApplicableInsights } 
 import { applyRunToSoul, recordEvolution, refreshIdentity } from './soul.js';
 import { checkRunOutcome } from './checker.js';
 import { scoreImportanceWithModel } from './importance-scorer.js';
-import { deriveCandidatePlaybooks, reconcilePlaybooks, selectPlaybook } from './playbooks.js';
+import { deriveCandidatePlaybooks, evolvePlaybooks, reconcilePlaybooks, selectPlaybook } from './playbooks.js';
 import { memoryOpProtocolHelp, parseMemoryOps } from './memory-tools.js';
+import { emitRunEvent } from './events.js';
 import type {
   AppliedMemoryOp,
   CheckerVerdict,
@@ -62,22 +63,38 @@ function shellApplicable(task: string): boolean {
   return /\b(pwd|ls|cat|echo|git)\b/i.test(task);
 }
 
+function noteApplicable(task: string): boolean {
+  return /\bnote[: -]/i.test(task);
+}
+
+function codeEditApplicable(task: string): boolean {
+  return /\bedit\s+`[^`]+`/i.test(task) && /\breplace\s+`[^`]+`\s+with\s+`[^`]+`/i.test(task);
+}
+
+function searchApplicable(task: string): boolean {
+  return /\b(search|find)\s+(?:for|about)?\s+/i.test(task) && !/https?:\/\//i.test(task);
+}
+
+const APPLICABILITY: Record<string, (task: string) => boolean> = {
+  'file-browser': fileApplicable,
+  'web-fetch': webApplicable,
+  'shell-command': shellApplicable,
+  'note-taker': noteApplicable,
+  'code-edit': codeEditApplicable,
+  'web-search': searchApplicable
+};
+
 function chooseSkills(task: string, installed: string[], preferred: string[]): string[] {
   const picks = new Set<string>();
-  const applicability: Record<string, (task: string) => boolean> = {
-    'file-browser': fileApplicable,
-    'web-fetch': webApplicable,
-    'shell-command': shellApplicable
-  };
 
   for (const skill of installed) {
-    const check = applicability[skill];
+    const check = APPLICABILITY[skill];
     if (check && check(task)) picks.add(skill);
   }
 
   for (const skill of preferred) {
     if (!installed.includes(skill)) continue;
-    const check = applicability[skill];
+    const check = APPLICABILITY[skill];
     if (!check) {
       picks.add(skill);
       continue;
@@ -120,7 +137,7 @@ async function executeAttempt(
     soulSummary: string;
     playbookSummary: string;
   }
-): Promise<{ output: string; rawOutput: string; skillOutputs: string[]; steps: TrajectoryStep[] }> {
+): Promise<{ output: string; rawOutput: string; skillOutputs: string[]; steps: TrajectoryStep[]; usage: { promptTokens: number; completionTokens: number; totalTokens: number } }> {
   const steps: TrajectoryStep[] = [];
 
   const userMessage = [
@@ -137,10 +154,12 @@ async function executeAttempt(
   ].filter(Boolean).join('\n');
 
   const modelStarted = Date.now();
-  const modelResponse = await invokeModel([
+  const modelInvocation = await invokeModelWithUsage([
     { role: 'system', content: `${baseContext.systemPrompt}\nOutput style: ${baseContext.outputStyle}` },
     { role: 'user', content: userMessage }
   ]);
+  const modelResponse = modelInvocation.content;
+  const usage = { ...modelInvocation.usage };
   steps.push({
     attempt: attemptNumber,
     action: 'model.invoke',
@@ -200,7 +219,7 @@ async function executeAttempt(
   ].filter(Boolean).join('\n');
 
   const rawOutput = modelResponse || fallbackOutput;
-  return { output: rawOutput, rawOutput, skillOutputs, steps };
+  return { output: rawOutput, rawOutput, skillOutputs, steps, usage };
 }
 
 async function applyAgentMemoryOps(rawOutput: string, retrievalContext: { task: string }): Promise<{ cleaned: string; applied: AppliedMemoryOp[] }> {
@@ -265,12 +284,14 @@ async function maybeEvolve(profile: SoulProfile, config: RuntimeConfig): Promise
   if (config.evolution.synthesizePlaybooks) {
     const allRuns = await loadRuns();
     const candidatePlaybooks = deriveCandidatePlaybooks(allRuns.slice(0, 60));
+    let workingPlaybooks = await loadPlaybooks();
     if (candidatePlaybooks.length > 0) {
-      const existingPlaybooks = await loadPlaybooks();
-      const nextPlaybooks = reconcilePlaybooks(existingPlaybooks, candidatePlaybooks);
-      await savePlaybooks(nextPlaybooks);
-      playbookCount = nextPlaybooks.length;
+      workingPlaybooks = reconcilePlaybooks(workingPlaybooks, candidatePlaybooks);
     }
+    const evolution = evolvePlaybooks(workingPlaybooks, allRuns.slice(0, 60));
+    workingPlaybooks = evolution.next;
+    await savePlaybooks(workingPlaybooks);
+    playbookCount = workingPlaybooks.length;
   }
 
   const evolved = recordEvolution(profile);
@@ -317,12 +338,7 @@ export async function runTask(task: string): Promise<RunRecord> {
   if (matchedPlaybook) {
     for (const skillId of matchedPlaybook.suggestedSkills) {
       if (installedSkills.includes(skillId) && !usedSkills.includes(skillId)) {
-        const applicability: Record<string, (task: string) => boolean> = {
-          'file-browser': fileApplicable,
-          'web-fetch': webApplicable,
-          'shell-command': shellApplicable
-        };
-        const check = applicability[skillId];
+        const check = APPLICABILITY[skillId];
         if (!check || check(task)) usedSkills.push(skillId);
       }
     }
@@ -340,11 +356,40 @@ export async function runTask(task: string): Promise<RunRecord> {
     playbookSummary: summarizePlaybook(matchedPlaybook)
   };
 
+  const runStarted = Date.now();
+  emitRunEvent({ type: 'run.start', task, runStartedAt: new Date(runStarted).toISOString() });
+  const totalUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
   let attempt = 1;
+  emitRunEvent({ type: 'run.attempt', attempt });
   let firstAttemptSucceeded = false;
   const allSteps: TrajectoryStep[] = [];
-  let { output, rawOutput, skillOutputs, steps } = await executeAttempt(task, attempt, null, baseContext);
+
+  const forestSamples = Math.max(1, Math.min(5, Math.round(config.evolution.forestOfThoughtSamples)));
+  let primaryAttempt = await executeAttempt(task, attempt, null, baseContext);
+  if (forestSamples > 1) {
+    const others = await Promise.all(
+      Array.from({ length: forestSamples - 1 }, () => executeAttempt(task, attempt, null, baseContext))
+    );
+    const candidates = [primaryAttempt, ...others];
+    let bestIdx = 0;
+    let bestScore = -Infinity;
+    for (let i = 0; i < candidates.length; i += 1) {
+      const draft = candidates[i];
+      const draftReflection = evaluateOutcome({ task, output: draft.output, usedSkills, status: 'completed' });
+      const verdict = await checkRunOutcome(task, draft.output, draftReflection, { useModel: false });
+      const score = (draftReflection.success ? 1 : 0) + verdict.confidence + (verdict.satisfied ? 0.5 : 0);
+      if (score > bestScore) { bestScore = score; bestIdx = i; }
+    }
+    primaryAttempt = candidates[bestIdx];
+    emitRunEvent({ type: 'run.step', step: { attempt, action: 'forest.vote', observation: `selected sample ${bestIdx + 1}/${candidates.length}`, signal: 'success' } });
+  }
+
+  let { output, rawOutput, skillOutputs, steps, usage } = primaryAttempt;
+  for (const step of steps) emitRunEvent({ type: 'run.step', step });
   allSteps.push(...steps);
+  totalUsage.promptTokens += usage.promptTokens;
+  totalUsage.completionTokens += usage.completionTokens;
+  totalUsage.totalTokens += usage.totalTokens;
   let reflectionDetail: ReflectionResult = evaluateOutcome({ task, output, usedSkills, status: 'completed' });
   if (reflectionDetail.success) firstAttemptSucceeded = true;
 
@@ -352,12 +397,17 @@ export async function runTask(task: string): Promise<RunRecord> {
     const retryLimit = Math.min(config.evolution.maxRetries, 3);
     while (!reflectionDetail.success && attempt <= retryLimit) {
       attempt += 1;
+      emitRunEvent({ type: 'run.attempt', attempt });
       const feedback = buildRetryFeedback(reflectionDetail, { task, output, usedSkills });
       const next = await executeAttempt(task, attempt, feedback, baseContext);
       output = next.output;
       rawOutput = next.rawOutput;
       skillOutputs = next.skillOutputs;
+      for (const step of next.steps) emitRunEvent({ type: 'run.step', step });
       allSteps.push(...next.steps);
+      totalUsage.promptTokens += next.usage.promptTokens;
+      totalUsage.completionTokens += next.usage.completionTokens;
+      totalUsage.totalTokens += next.usage.totalTokens;
       reflectionDetail = evaluateOutcome({ task, output, usedSkills, status: 'completed' });
     }
   }
@@ -367,6 +417,7 @@ export async function runTask(task: string): Promise<RunRecord> {
     output = memoryOpResult.cleaned;
   }
   if (memoryOpResult.applied.length > 0) {
+    for (const entry of memoryOpResult.applied) emitRunEvent({ type: 'run.memory_op', kind: entry.kind, detail: entry.detail });
     allSteps.push({
       attempt,
       action: 'memory.tools',
@@ -397,7 +448,9 @@ export async function runTask(task: string): Promise<RunRecord> {
     checkerVerdict,
     steps: allSteps,
     memoryOps: memoryOpResult.applied,
-    firstAttemptSucceeded: ratifiedSuccess && firstAttemptSucceeded
+    firstAttemptSucceeded: ratifiedSuccess && firstAttemptSucceeded,
+    tokenUsage: totalUsage,
+    durationMs: Date.now() - runStarted
   };
 
   const storedRun = await appendRun(draftRun);
@@ -439,5 +492,6 @@ export async function runTask(task: string): Promise<RunRecord> {
   updatedProfile = refreshIdentity(evolution.profile, agent, evolution.insights);
   await saveSoulProfile(updatedProfile);
 
+  emitRunEvent({ type: 'run.complete', runId: storedRun.id, status: storedRun.status, attempts: storedRun.attempts });
   return storedRun;
 }

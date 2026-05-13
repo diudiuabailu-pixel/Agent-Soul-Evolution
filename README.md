@@ -59,8 +59,14 @@ node dist/cli.js ollama:list
 node dist/cli.js eval
 node dist/cli.js soul
 node dist/cli.js soul:evolve
+node dist/cli.js soul:export ./my-soul.json
+node dist/cli.js soul:import ./my-soul.json
 node dist/cli.js playbooks:list
 node dist/cli.js playbooks:synthesize
+node dist/cli.js prompt:evolve
+node dist/cli.js memory:audit
+node dist/cli.js memory:sign-existing
+node dist/cli.js eval --file ./my-bench.json
 node dist/cli.js config:set-model --base-url http://localhost:11434/v1 --model qwen2.5:7b
 ```
 
@@ -84,20 +90,18 @@ src/
 
 ## Runtime data directory
 
-The runtime stores local state in `./.runtime`.
+The runtime stores local state in `./.runtime`. Persistent data lives in a
+single SQLite database; legacy JSON files (if present from older versions)
+are migrated on first start and renamed `.migrated`.
 
 ```text
 .runtime/
   config.yaml
-  agents/
+  store.sqlite           # memory, runs, insights, playbooks, agent, soul, notes
   memory/
-  runs/
+    embeddings.json      # content-hash embedding cache (debounced)
   skills/
-    installed.json
-    packages/
-  soul/
-    profile.json
-    insights.json
+    packages/            # installed external skill packages
 ```
 
 ## Configuration
@@ -133,6 +137,9 @@ evolution:
   linkMemoriesOnWrite: true
   oneHopExpansion: true
   synthesizePlaybooks: true
+  forestOfThoughtSamples: 1
+  forestOfThoughtThreshold: 0.3
+  memoryProvenance: false
 ```
 
 `linkMemoriesOnWrite` builds an A-Mem-style memory graph. `oneHopExpansion`

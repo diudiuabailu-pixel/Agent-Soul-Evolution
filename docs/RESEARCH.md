@@ -69,6 +69,74 @@ configured endpoint's `/embeddings` route. If the endpoint does not implement
 embeddings, the fallback is graceful — relevance silently reverts to token
 Jaccard.
 
+## Prompt auto-optimization (EvoAgentX 2026)
+
+`src/runtime/prompt-evolver.ts` runs a textgrad-lite loop: it takes the
+current `agent.systemPrompt`, asks the model for up to three improved
+candidates grounded in recent failure signals, and runs the eval suite for
+each candidate. Only candidates that beat the baseline success rate are
+accepted; the baseline is restored otherwise. The eval suite is the
+`fitness` function and the recent failure trajectory is the `gradient`
+direction (EvoAgentX, arXiv:2507.03616).
+
+## OpenSpace FIX / DERIVED playbooks (HKUDS 2026)
+
+`evolvePlaybooks` in `src/runtime/playbooks.ts` augments the existing
+CAPTURED synthesis with two more evolution modes from OpenSpace:
+- **FIX** rewrites the playbook prompt when its rolling success rate
+  drops below the threshold, marking the playbook with a `FIX:` annotation
+  so future calls verify preconditions first.
+- **DERIVED** combines two playbooks whose triggers and skill sets
+  overlap into a parent playbook with `childIds` set to the originals,
+  giving us a hierarchical playbook tree (GenericAgent SOP-tree analogue).
+
+`selectPlaybook` walks the tree from root playbooks down to children,
+returning the most-specific match.
+
+## Forest-of-Thought consensus (NeurIPS 2026)
+
+When `config.evolution.forestOfThoughtSamples > 1`, the engine samples N
+parallel attempts in `Promise.all`, scores each via `evaluateOutcome` plus
+the heuristic checker, and selects the highest-scoring sample. Defaults to
+1 (single attempt) so local CPU cost stays predictable.
+
+## SSGM memory governance (2026)
+
+`src/runtime/governance.ts` signs each memory item with a SHA-256 of
+`(salt | id | kind | task | content)` when `config.evolution.memoryProvenance`
+is enabled. `auditMemoryProvenance` re-signs each item and surfaces those
+whose stored signature no longer matches the current content (tampering
+detection). `backfillProvenance` retro-signs previously unsigned items.
+
+## A2A receiver (Survey of Agent Interoperability Protocols 2025)
+
+`POST /a2a/messages` accepts an A2A envelope (`message.parts[].text`,
+`message.content`, or `task` field) and returns an A2A response envelope
+with the agent's run output and metadata. `GET /a2a/agent-card` returns
+the standard agent card. This lets other agents delegate tasks to this
+runtime over HTTP.
+
+## Token + cost tracking and Checker calibration
+
+`SoulProfile` tracks `lifetimeTokens`, `lifetimeMs`, and a Brier score
+(`checkerCalibration.averageBrier`) of the Checker's confidence vs the
+reflection's verdict. The Brier score is the SCoRe-inspired sanity gauge
+for whether self-correction signals are trustworthy.
+
+## SQLite backend
+
+`src/runtime/db.ts` opens a single `store.sqlite` database with WAL mode
+and serializes writes through SQLite's built-in locking. JSON files from
+earlier versions are migrated transparently on first start and renamed
+`.migrated`. The previous `withFileLock` mutex layer is no longer needed.
+
+## Soul export / import packages
+
+`src/runtime/soul-package.ts` round-trips memory, insights, playbooks,
+runs, agent, and soul into a single JSON file via the storage API. This
+is the sharable "experience pack" format for the OpenSpace community
+direction.
+
 ## MCP server interoperability (2026 inter-agent protocols)
 
 `src/mcp-server.ts` exposes the soul's memory, insights, playbooks, and run
