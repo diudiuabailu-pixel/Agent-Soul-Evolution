@@ -18,6 +18,24 @@ export const skillCatalog: SkillManifest[] = [
     name: 'Shell Command',
     description: 'Run local shell commands in the workspace with explicit invocation.',
     entry: 'builtin:shell-command'
+  },
+  {
+    id: 'note-taker',
+    name: 'Note Taker',
+    description: 'Capture a short note in local notes storage without polluting agent memory.',
+    entry: 'builtin:note-taker'
+  },
+  {
+    id: 'code-edit',
+    name: 'Code Edit',
+    description: 'Preview safe file edits inside the workspace. Returns a diff plan; the agent applies it explicitly.',
+    entry: 'builtin:code-edit'
+  },
+  {
+    id: 'web-search',
+    name: 'Web Search',
+    description: 'Hit a configured search API (env ASE_SEARCH_URL) and return top snippets.',
+    entry: 'builtin:web-search'
   }
 ];
 

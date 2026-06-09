@@ -1,14 +1,37 @@
 import { Command } from 'commander';
 import open from 'open';
-import { ensureRuntime, installSkill, loadConfig, loadInstalledSkills, saveConfig } from './runtime/storage.js';
+import {
+  ensureRuntime,
+  installSkill,
+  loadConfig,
+  loadInsights,
+  loadInstalledSkills,
+  loadMemory,
+  loadPlaybooks,
+  loadRuns,
+  loadSoulProfile,
+  loadAgent,
+  saveConfig,
+  saveInsights,
+  savePlaybooks,
+  saveSoulProfile
+} from './runtime/storage.js';
 import { getSkillManifest } from './skills/catalog.js';
 import { loadAllSkillManifests, installSkillPackage } from './runtime/discovery.js';
-import { runEvalSuite } from './runtime/eval.js';
+import { loadEvalSuiteFromFile, runEvalSuite } from './runtime/eval.js';
+import { evolvePromptOnce } from './runtime/prompt-evolver.js';
+import { exportSoul, importSoul } from './runtime/soul-package.js';
+import { auditMemoryProvenance, backfillProvenance } from './runtime/governance.js';
 import { listOllamaModels } from './runtime/ollama.js';
 import { createServer } from './server.js';
+import { runTask } from './runtime/engine.js';
+import { deriveCandidateInsights, reconcileInsights } from './runtime/insights.js';
+import { deriveCandidatePlaybooks, reconcilePlaybooks } from './runtime/playbooks.js';
+import { recordEvolution, refreshIdentity, summarizeSoul } from './runtime/soul.js';
+import { consolidateMemory } from './runtime/memory.js';
 
 const program = new Command();
-program.name('ase').description('Agent Soul Evolution local runtime').version('0.1.0');
+program.name('ase').description('Agent Soul Evolution local runtime').version('0.2.0');
 
 program.command('init').description('Initialize local runtime files').action(async () => {
   await ensureRuntime();
@@ -19,11 +42,13 @@ program.command('doctor').description('Check local runtime status').action(async
   await ensureRuntime();
   const config = await loadConfig();
   const installed = await loadInstalledSkills();
+  const soul = await loadSoulProfile();
   console.log(`Runtime: ready`);
   console.log(`Port: ${config.server.port}`);
   console.log(`Default model: ${config.models.default.model}`);
   console.log(`Base URL: ${config.models.default.baseUrl}`);
   console.log(`Installed skills: ${installed.join(', ')}`);
+  console.log(`Soul: ${summarizeSoul(soul)}`);
 });
 
 const skill = program.command('skill').description('Manage skills');
@@ -78,11 +103,232 @@ program.command('config:set-model')
     console.log(`Updated model to ${options.model} at ${options.baseUrl}`);
   });
 
-program.command('eval').description('Run the default evaluation suite').action(async () => {
-  const result = await runEvalSuite();
-  console.log(`Passed ${result.passed}/${result.total}`);
-  for (const item of result.results) {
-    console.log(`- ${item.name}: ${item.passed ? 'PASS' : 'FAIL'}${item.matched.length ? ` (${item.matched.join(', ')})` : ''}`);
+program.command('run')
+  .description('Run a single task through the runtime')
+  .argument('<task...>')
+  .option('--json', 'Print the full run record as JSON')
+  .action(async (taskParts: string[], options: { json?: boolean }) => {
+    const task = taskParts.join(' ').trim();
+    if (!task) {
+      console.error('Task is required.');
+      process.exit(1);
+    }
+    const run = await runTask(task);
+    if (options.json) {
+      console.log(JSON.stringify(run, null, 2));
+      return;
+    }
+    console.log(`Run ${run.id} (${run.status}, attempts=${run.attempts})`);
+    console.log(`Skills: ${run.usedSkills.join(', ') || 'none'}`);
+    if (run.appliedInsightIds && run.appliedInsightIds.length > 0) {
+      console.log(`Applied insights: ${run.appliedInsightIds.length}`);
+    }
+    if (run.retrievedMemoryIds && run.retrievedMemoryIds.length > 0) {
+      console.log(`Recalled memories: ${run.retrievedMemoryIds.length}`);
+    }
+    console.log('---');
+    console.log(run.output);
+    console.log('---');
+    console.log(`Reflection: ${run.reflection}`);
+  });
+
+program.command('memory:list')
+  .description('Print recent memory items')
+  .option('-n, --limit <n>', 'Max items to show', '10')
+  .action(async (options: { limit?: string }) => {
+    const items = await loadMemory();
+    const limit = Math.max(1, Number(options.limit || 10));
+    for (const item of items.slice(0, limit)) {
+      console.log(`[${item.kind}] i=${item.importance} acc=${item.accessCount} ${item.createdAt}`);
+      console.log(`  task: ${item.task.slice(0, 120)}`);
+      console.log(`  ${item.content.slice(0, 200)}`);
+    }
+  });
+
+program.command('runs:list')
+  .description('Print recent run records')
+  .option('-n, --limit <n>', 'Max runs to show', '10')
+  .action(async (options: { limit?: string }) => {
+    const runs = await loadRuns();
+    const limit = Math.max(1, Number(options.limit || 10));
+    for (const run of runs.slice(0, limit)) {
+      console.log(`${run.id} ${run.status} attempts=${run.attempts} ${run.createdAt}`);
+      console.log(`  task: ${run.task.slice(0, 120)}`);
+      console.log(`  skills: ${run.usedSkills.join(', ') || 'none'}`);
+      if (run.steps && run.steps.length > 0) console.log(`  steps: ${run.steps.length}`);
+      if (run.memoryOps && run.memoryOps.length > 0) console.log(`  memoryOps: ${run.memoryOps.map((op) => op.kind).join(', ')}`);
+    }
+  });
+
+program.command('run:show')
+  .description('Show full detail (trajectory + memory ops) for a run id')
+  .argument('<id>')
+  .action(async (id: string) => {
+    const runs = await loadRuns();
+    const run = runs.find((entry) => entry.id === id);
+    if (!run) {
+      console.error(`No run with id ${id}`);
+      process.exit(1);
+    }
+    console.log(`${run.id} ${run.status} attempts=${run.attempts}`);
+    console.log(`task: ${run.task}`);
+    console.log(`skills: ${run.usedSkills.join(', ') || 'none'}`);
+    if (run.checkerVerdict) {
+      console.log(`checker: ${run.checkerVerdict.satisfied ? 'satisfied' : 'rejected'} (${run.checkerVerdict.source}, conf=${run.checkerVerdict.confidence.toFixed(2)})`);
+    }
+    console.log('---trajectory---');
+    for (const step of run.steps || []) {
+      console.log(`#${step.attempt} ${step.action} [${step.signal}]${step.durationMs ? ` ${step.durationMs}ms` : ''}`);
+      console.log(`  ${(step.observation || '').slice(0, 200)}`);
+    }
+    if (run.memoryOps && run.memoryOps.length > 0) {
+      console.log('---memory ops---');
+      for (const op of run.memoryOps) console.log(`${op.kind}: ${op.detail}`);
+    }
+    console.log('---output---');
+    console.log(run.output);
+    console.log('---reflection---');
+    console.log(run.reflection);
+  });
+
+program.command('memory:consolidate')
+  .description('Merge highly similar memories to compress long-term store')
+  .action(async () => {
+    const items = await loadMemory();
+    const result = consolidateMemory(items);
+    if (result.merged === 0) {
+      console.log('No memories were merged.');
+      return;
+    }
+    const { saveMemoryItems } = await import('./runtime/storage.js');
+    await saveMemoryItems(result.items);
+    console.log(`Merged ${result.merged} memory item(s); now ${result.items.length} stored.`);
+  });
+
+program.command('eval')
+  .description('Run the default evaluation suite (or load extra cases from a JSON file)')
+  .option('--file <path>', 'Optional JSON file with extra eval cases')
+  .action(async (options: { file?: string }) => {
+    const extra = options.file ? await loadEvalSuiteFromFile(options.file) : [];
+    const result = await runEvalSuite(extra);
+    console.log(`Passed ${result.passed}/${result.total} (success rate ${(result.successRate * 100).toFixed(1)}%)`);
+    for (const item of result.results) {
+      console.log(`- ${item.name}: ${item.passed ? 'PASS' : 'FAIL'}${item.matched.length ? ` (${item.matched.join(', ')})` : ''}`);
+    }
+  });
+
+program.command('prompt:evolve')
+  .description('Run an EvoAgentX-style prompt optimization cycle (uses eval suite as fitness)')
+  .option('--file <path>', 'Optional eval JSON to include in fitness evaluation')
+  .action(async (options: { file?: string }) => {
+    const extra = options.file ? await loadEvalSuiteFromFile(options.file) : [];
+    const report = await evolvePromptOnce(extra);
+    console.log(`Baseline success: ${(report.baselineSuccessRate * 100).toFixed(1)}%`);
+    if (report.best) {
+      console.log(`Improved to ${(report.best.successRate * 100).toFixed(1)}% — ${report.best.rationale}`);
+    } else {
+      console.log('No candidate beat the baseline; agent prompt unchanged.');
+    }
+    for (const rejected of report.rejected) {
+      console.log(`  rejected (${(rejected.successRate * 100).toFixed(1)}%): ${rejected.rationale.slice(0, 80)}`);
+    }
+  });
+
+program.command('soul:export')
+  .description('Export the soul (memory + insights + playbooks + runs) to a JSON package')
+  .argument('<path>')
+  .action(async (target: string) => {
+    const result = await exportSoul(target);
+    console.log(`Exported soul to ${result.path} (${result.bytes} bytes)`);
+  });
+
+program.command('soul:import')
+  .description('Import a soul package previously created via soul:export')
+  .argument('<path>')
+  .option('--replace', 'Replace existing entries instead of merging')
+  .action(async (source: string, options: { replace?: boolean }) => {
+    const result = await importSoul(source, { merge: !options.replace });
+    console.log(`Imported soul: ${JSON.stringify(result)}`);
+  });
+
+program.command('memory:audit')
+  .description('Audit memory provenance signatures (SSGM)')
+  .action(async () => {
+    const audit = await auditMemoryProvenance();
+    console.log(`signed=${audit.signed} unsigned=${audit.unsigned} tampered=${audit.tampered.length} total=${audit.total}`);
+    for (const entry of audit.tampered.slice(0, 10)) {
+      console.log(`tampered ${entry.id}: expected ${entry.expected.slice(0, 16)}…`);
+    }
+  });
+
+program.command('memory:sign-existing')
+  .description('Backfill provenance signatures on previously stored memories')
+  .action(async () => {
+    const touched = await backfillProvenance();
+    console.log(`Signed ${touched} previously unsigned memory item(s).`);
+  });
+
+program.command('soul').description('Show the current soul profile and top insights').action(async () => {
+  const [soul, insights] = await Promise.all([loadSoulProfile(), loadInsights()]);
+  console.log(summarizeSoul(soul));
+  if (soul.identity) {
+    console.log('---');
+    console.log(soul.identity);
+  }
+  if (insights.length > 0) {
+    console.log('---');
+    console.log('Top insights:');
+    for (const insight of insights.slice(0, 5)) {
+      console.log(`- (s=${insight.support} c=${insight.confidence.toFixed(2)}) ${insight.content}`);
+    }
+  }
+});
+
+program.command('playbooks:list').description('Print synthesized playbooks').action(async () => {
+  const playbooks = await loadPlaybooks();
+  if (playbooks.length === 0) {
+    console.log('No playbooks synthesized yet.');
+    return;
+  }
+  for (const entry of playbooks) {
+    console.log(`${entry.id} support=${entry.support} success=${(entry.successRate * 100).toFixed(0)}%`);
+    console.log(`  ${entry.title}`);
+    console.log(`  trigger: ${entry.trigger || '(none)'}`);
+    console.log(`  skills: ${entry.suggestedSkills.join(', ') || 'none'}`);
+  }
+});
+
+program.command('playbooks:synthesize').description('Run a playbook synthesis cycle over recent runs').action(async () => {
+  const [runs, existing] = await Promise.all([loadRuns(), loadPlaybooks()]);
+  const candidates = deriveCandidatePlaybooks(runs.slice(0, 60));
+  const next = reconcilePlaybooks(existing, candidates);
+  await savePlaybooks(next);
+  const delta = next.length - existing.length;
+  console.log(`Playbooks: now ${next.length} stored (${delta >= 0 ? '+' : ''}${delta} from this cycle).`);
+  for (const playbook of next.slice(0, 5)) {
+    console.log(`- ${playbook.title} (s=${playbook.support}, success=${(playbook.successRate * 100).toFixed(0)}%)`);
+  }
+});
+
+program.command('soul:evolve').description('Run an insight extraction cycle over recent runs').action(async () => {
+  const [runs, existing, profile, agent] = await Promise.all([
+    loadRuns(),
+    loadInsights(),
+    loadSoulProfile(),
+    loadAgent()
+  ]);
+  const candidates = deriveCandidateInsights(runs.slice(0, 20));
+  const { next, ops } = reconcileInsights(existing, candidates);
+  await saveInsights(next);
+  const evolved = recordEvolution(profile);
+  const refreshed = refreshIdentity(evolved, agent, next);
+  await saveSoulProfile(refreshed);
+  console.log(`Evolution cycle ${refreshed.generations} complete. ${ops.length} operation(s).`);
+  for (const op of ops) {
+    if (op.kind === 'add') console.log(`+ ADD: ${op.insight.content}`);
+    if (op.kind === 'upvote') console.log(`^ UPVOTE: ${op.id}`);
+    if (op.kind === 'downvote') console.log(`v DOWNVOTE: ${op.id}`);
+    if (op.kind === 'edit') console.log(`~ EDIT: ${op.id}`);
   }
 });
 
@@ -94,6 +340,12 @@ program.command('start').description('Start local runtime and open the web conso
     console.log(`Agent Soul Evolution running on ${url}`);
     await open(url);
   });
+});
+
+program.command('mcp').description('Start MCP stdio server exposing memory, insights, playbooks, and run tools').action(async () => {
+  await ensureRuntime();
+  const { startMcpStdioServer } = await import('./mcp-server.js');
+  await startMcpStdioServer();
 });
 
 program.parseAsync(process.argv);
